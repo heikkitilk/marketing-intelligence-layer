@@ -1,4 +1,4 @@
-# Your Personal Intelligence Layer
+# Your Marketing Intelligence Layer
 
 Every marketer has years of hard-won knowledge scattered across old decks, meeting notes, Slack threads and their own head. This turns that pile into a single, searchable intelligence layer you actually use — and that your AI assistants can read.
 
@@ -35,13 +35,13 @@ If that errors because you don't have Node installed, follow the [official insta
 Either click the green **Code → Download ZIP** button at the top of this page and unzip it, or paste this into Terminal:
 
 ```
-git clone https://github.com/searchbrat/personal-intelligence-layer.git
+git clone https://github.com/searchbrat/marketing-intelligence-layer.git
 ```
 
 ### 3. Open the folder in Claude Code
 
 ```
-cd personal-intelligence-layer
+cd marketing-intelligence-layer
 claude
 ```
 
