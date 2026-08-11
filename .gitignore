@@ -1,0 +1,14 @@
+# Your intelligence layer and your notes are yours — they stay local.
+index.html
+config.json
+.processed.md
+raw/.processed.md
+
+# Everything you drop in raw/ and everything processed out of it
+raw/*
+!raw/example-notes.md
+archive/*
+!archive/.gitkeep
+
+.DS_Store
+.claude/settings.local.json
