@@ -7,7 +7,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .census import (
     _REPOSITORY_ROOT,
@@ -19,6 +19,7 @@ from .census import (
     validate_schema_document,
     write_census_private,
 )
+from .normalize import normalize_census, write_normalization_private
 
 
 def _safe_reason(error: BaseException) -> str:
@@ -36,6 +37,16 @@ def _safe_reason(error: BaseException) -> str:
         "private_output_not_gitignored",
         "private_output_not_directory",
         "private_output_unsafe_owner",
+        "normalization_manifest_invalid",
+        "normalization_manifest_window_mismatch",
+        "normalization_invalid_artifact",
+        "normalization_invalid_harness",
+        "normalization_invalid_source_version",
+        "normalization_invalid_event_count",
+        "normalization_invalid_packet_limit",
+        "private_output_permissions_unsafe",
+        "private_output_symlink",
+        "normalization_run_exists",
     }
     message = str(error)
     return message if message in known else "census_command_failed"
@@ -171,6 +182,124 @@ def _census_command(arguments: argparse.Namespace) -> int:
     return 0 if summary["zero_unaccounted"] and deterministic else 2
 
 
+def _normalization_hashes(run: object) -> dict[str, str]:
+    packets = list(getattr(run, "packets"))
+    packet_manifest = getattr(run, "packet_manifest_document")
+    coverage = getattr(run, "coverage_document")
+    canonical_event_packet = {
+        "packet_manifest": packet_manifest,
+        "coverage": coverage,
+        "packets": packets,
+    }
+    return {
+        "packet_manifest_sha256": hashlib.sha256(canonical_json(packet_manifest).encode("utf-8")).hexdigest(),
+        "coverage_sha256": hashlib.sha256(canonical_json(coverage).encode("utf-8")).hexdigest(),
+        "packet_payloads_sha256": hashlib.sha256(canonical_json(packets).encode("utf-8")).hexdigest(),
+        "canonical_event_packet_sha256": hashlib.sha256(canonical_json(canonical_event_packet).encode("utf-8")).hexdigest(),
+        "receipt_sha256": hashlib.sha256(canonical_json(getattr(run, "receipt_document")).encode("utf-8")).hexdigest(),
+    }
+
+
+def _source_byte_delta(first: Mapping[str, str], second: Mapping[str, str]) -> dict[str, int]:
+    """Summarize cross-pass raw-byte drift without exposing source identities."""
+
+    first_ids = set(first)
+    second_ids = set(second)
+    shared_ids = first_ids & second_ids
+    return {
+        "first_opened_descriptors": len(first_ids),
+        "second_opened_descriptors": len(second_ids),
+        "changed_descriptor_count": sum(first[item] != second[item] for item in shared_ids),
+        "first_only_descriptor_count": len(first_ids - second_ids),
+        "second_only_descriptor_count": len(second_ids - first_ids),
+    }
+
+
+def _normalize_command(arguments: argparse.Namespace) -> int:
+    """Build private U2 packets without exposing source text or paths."""
+
+    try:
+        config, _configured_output = load_census_config(arguments.config)
+        with arguments.manifest.open("r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        if not isinstance(manifest, dict):
+            raise ValueError("normalization_manifest_invalid")
+        result = normalize_census(manifest, config)
+        determinism = {
+            "packet_manifest_sha256_stable": UNKNOWN,
+            "coverage_sha256_stable": UNKNOWN,
+            "packet_payloads_sha256_stable": UNKNOWN,
+            "canonical_event_packet_sha256_stable": UNKNOWN,
+            "receipt_sha256_stable": UNKNOWN,
+            "opened_descriptor_bytes_unchanged_during_each_run": bool(result.source_integrity["opened_descriptor_bytes_unchanged_during_read"]),
+        }
+        if arguments.verify_determinism:
+            repeated = normalize_census(manifest, config)
+            first_hashes = _normalization_hashes(result)
+            second_hashes = _normalization_hashes(repeated)
+            inputs_preserved = bool(result.source_integrity["opened_descriptor_bytes_unchanged_during_read"]) and bool(
+                repeated.source_integrity["opened_descriptor_bytes_unchanged_during_read"]
+            )
+            determinism = {
+                "packet_manifest_sha256_stable": first_hashes["packet_manifest_sha256"] == second_hashes["packet_manifest_sha256"],
+                "coverage_sha256_stable": first_hashes["coverage_sha256"] == second_hashes["coverage_sha256"],
+                "packet_payloads_sha256_stable": first_hashes["packet_payloads_sha256"] == second_hashes["packet_payloads_sha256"],
+                "canonical_event_packet_sha256_stable": first_hashes["canonical_event_packet_sha256"] == second_hashes["canonical_event_packet_sha256"],
+                # The receipt contains an observational raw-byte digest. It can
+                # differ when an active harness appends post-cutoff data, even
+                # though the fixed-window canonical evidence is deterministic.
+                "receipt_sha256_stable": first_hashes["receipt_sha256"] == second_hashes["receipt_sha256"],
+                "opened_descriptor_bytes_unchanged_during_each_run": inputs_preserved,
+                "cross_pass_raw_source_bytes_equal": result.source_byte_sha256 == repeated.source_byte_sha256,
+                "cross_pass_raw_source_byte_delta": _source_byte_delta(result.source_byte_sha256, repeated.source_byte_sha256),
+                "first_packet_manifest_sha256": first_hashes["packet_manifest_sha256"],
+                "second_packet_manifest_sha256": second_hashes["packet_manifest_sha256"],
+                "first_coverage_sha256": first_hashes["coverage_sha256"],
+                "second_coverage_sha256": second_hashes["coverage_sha256"],
+                "first_packet_payloads_sha256": first_hashes["packet_payloads_sha256"],
+                "second_packet_payloads_sha256": second_hashes["packet_payloads_sha256"],
+                "first_canonical_event_packet_sha256": first_hashes["canonical_event_packet_sha256"],
+                "second_canonical_event_packet_sha256": second_hashes["canonical_event_packet_sha256"],
+                "first_opened_source_bytes_sha256": result.source_integrity["opened_source_bytes_sha256"],
+                "second_opened_source_bytes_sha256": repeated.source_integrity["opened_source_bytes_sha256"],
+            }
+            result = replace(repeated, receipt_document={**repeated.receipt_document, "determinism": determinism})
+        output = write_normalization_private(result, arguments.output_root)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error)}))
+        return 2
+
+    summary = result.receipt_document["summary"]
+    source_integrity = result.source_integrity
+    deterministic = all(
+        determinism[key] is True
+        for key in (
+            "packet_manifest_sha256_stable",
+            "coverage_sha256_stable",
+            "packet_payloads_sha256_stable",
+            "canonical_event_packet_sha256_stable",
+            "opened_descriptor_bytes_unchanged_during_each_run",
+        )
+    ) if arguments.verify_determinism else bool(source_integrity["opened_descriptor_bytes_unchanged_during_read"])
+    status = "normalized" if summary["terminal_statuses"]["quarantined"] == 0 and summary["terminal_statuses"]["failed"] == 0 else "normalized_with_quarantines"
+    print(canonical_json({
+        "status": status,
+        "artifact_count": summary["artifact_count"],
+        "event_count": summary["event_count"],
+        "packet_count": summary["packet_count"],
+        "packet_bytes": summary["packet_bytes"],
+        "reason_aggregates": summary["reason_aggregates"],
+        "source_integrity": source_integrity,
+        "coverage_complete": result.coverage_complete,
+        "determinism": determinism,
+        "resource_estimate": result.receipt_document["resource_estimate"],
+        "receipt_sha256": output.receipt_sha256,
+        "private_output": "written",
+        "mode": "local_private_no_provider_egress",
+    }))
+    return 0 if result.coverage_complete and bool(source_integrity["opened_descriptor_bytes_unchanged_during_read"]) and deterministic else 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run a no-egress census with explicitly configured local roots."""
 
@@ -182,9 +311,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     census.add_argument("--cutoff", help="optional ISO 8601 half-open cutoff, including an AMT offset")
     census.add_argument("--output-root", help="ignored private output root relative to this repository")
     census.add_argument("--verify-determinism", action="store_true", help="run the same fixed census twice before writing the receipt")
+    normalize = subcommands.add_parser("normalize", help="normalize a U1 manifest into private redacted packets")
+    normalize.add_argument("--config", type=Path, required=True, help="local census configuration JSON")
+    normalize.add_argument("--manifest", type=Path, required=True, help="private U1 manifest JSON")
+    normalize.add_argument("--output-root", type=Path, required=True, help="new ignored private output root")
+    normalize.add_argument("--verify-determinism", action="store_true", help="run normalization twice before private packet write")
     arguments = parser.parse_args(argv)
     if arguments.command == "census":
         return _census_command(arguments)
+    if arguments.command == "normalize":
+        return _normalize_command(arguments)
     parser.error("unknown command")
     return 2
 

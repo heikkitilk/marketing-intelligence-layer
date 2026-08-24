@@ -51,6 +51,34 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(result.reason, "unknown_injected_context")
         self.assertEqual(result.records, ())
 
+    def test_changed_fingerprinted_block_and_unlisted_instruction_fail_closed(self):
+        changed = redact_records(
+            [{
+                "role": "user",
+                "content": "INJECTED_POLICY_BEGIN\nChanged instruction body.\nINJECTED_POLICY_END",
+            }],
+            rules_path=CONFIG / "redaction-rules.json",
+            fingerprints_path=CONFIG / "injected-context-fingerprints.json",
+        )
+        unlisted = redact_records(
+            [{
+                "role": "user",
+                "content": "INJECTED_UNLISTED_BEGIN\nUnsafe instruction.\nINJECTED_UNLISTED_END",
+            }],
+            rules_path=CONFIG / "redaction-rules.json",
+            fingerprints_path=CONFIG / "injected-context-fingerprints.json",
+        )
+
+        self.assertEqual(changed.status, RedactionStatus.QUARANTINED)
+        self.assertEqual(changed.reason, "unknown_injected_context")
+        self.assertEqual(unlisted.status, RedactionStatus.QUARANTINED)
+        self.assertEqual(unlisted.reason, "unknown_injected_context")
+
+    def test_safe_session_pointer_is_not_misclassified_as_a_cookie(self):
+        pointer = "session://codex/artifact-aaaaaaaaaaaaaaaaaaaaaaaa@" + ("a" * 64) + "#event=event-aaaaaaaaaaaaaaaaaaaaaaaa"
+
+        self.assertEqual(scan_for_unsafe_content(pointer, rules_path=CONFIG / "redaction-rules.json"), ())
+
     def test_planted_credential_quarantines_before_model_egress(self):
         result = redact_text(
             "Use this credential: AKIAIOSFODNN7EXAMPLE and do not share it",

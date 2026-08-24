@@ -1,5 +1,5 @@
 {
-  "version": "u8-redaction-v1",
+  "version": "u2-redaction-v2",
   "credential_patterns": [
     {
       "id": "aws_access_key",
@@ -20,6 +20,10 @@
     {
       "id": "bearer_token",
       "pattern": "(?i)\\bbearer\\s+[A-Za-z0-9._~+/-]{20,}"
+    },
+    {
+      "id": "cookie_or_session_token",
+      "pattern": "(?i)\\b(?:cookie|session|auth(?:orization)?|csrf|jwt)[_-]?(?:token|id)?\\s*[=:]\\s*(?!//)[A-Za-z0-9._~+/-]{16,}"
     }
   ],
   "redaction_patterns": [
@@ -37,10 +41,38 @@
       "id": "absolute_local_path",
       "pattern": "(?<![A-Za-z0-9])/(?:Users|private|var|tmp)/[^\\s\\\"'<>]{2,}",
       "replacement": "[REDACTED:local-path]"
+    },
+    {
+      "id": "personal_name",
+      "pattern": "(?i)\\b(?:customer|contact|employee|person|name)\\s*[:=]\\s*[A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2}",
+      "replacement": "[REDACTED:personal-name]"
+    },
+    {
+      "id": "proprietary_identifier",
+      "pattern": "(?i)\\b(?:proprietary|internal)[ _-]?(?:id|identifier|project|code)\\s*[:=]\\s*[A-Za-z0-9][A-Za-z0-9._-]{2,}",
+      "replacement": "[REDACTED:proprietary-id]"
     }
   ],
   "unsafe_markup_patterns": [
     "(?i)<\\s*(?:script|style|iframe|object|embed|svg|math)\\b",
-    "(?i)on[a-z]+\\s*="
+    "(?i)<[^>]+\\bon[a-z]+\\s*="
+  ],
+  "entropy_rules": [
+    {
+      "id": "high_entropy_secret_in_sensitive_context",
+      "minimum_length": 32,
+      "minimum_shannon_entropy": 4.0,
+      "requires_context_pattern": "(?i)(?:secret|token|credential|api[_ -]?key|password|cookie)\\s*[=:]?\\s*$"
+    }
+  ],
+  "false_positive_overrides": [
+    {
+      "id": "sha256_digest",
+      "pattern": "(?i)^sha256:[a-f0-9]{64}$"
+    },
+    {
+      "id": "benign_issue_identifier",
+      "pattern": "(?i)^issue-[0-9]+$"
+    }
   ]
 }

@@ -1,10 +1,14 @@
 {
-  "version": "u8-injected-context-v1",
+  "version": "u2-injected-context-v2",
   "fingerprints": [
     {
       "id": "fixture_injected_policy",
       "start": "INJECTED_POLICY_BEGIN",
-      "end": "INJECTED_POLICY_END"
+      "end": "INJECTED_POLICY_END",
+      "normalized_sha256": [
+        "2b1320e277dca0b14ff80320fc8b5948816af5e1c770663f99efaee22391c391",
+        "035ce2f30192aa7888a64f71a90640cd47be0314e566ad03ae8aa8aaa872e51e"
+      ]
     },
     {
       "id": "codex_memory_summary",
@@ -26,5 +30,10 @@
       "start": "<INSTRUCTIONS>",
       "end": "</INSTRUCTIONS>"
     }
+  ],
+  "unknown_instruction_patterns": [
+    "(?is)<[^>\\n]*(?:instruction|policy|memory|startup|system)[^>\\n]*>",
+    "(?im)^\\s*INJECTED_[A-Z0-9_]+_(?:BEGIN|END)\\s*$",
+    "(?im)^\\s*(?:SYSTEM|STARTUP|POLICY|MEMORY)_[A-Z0-9_]+_(?:BEGIN|END)\\s*$"
   ]
 }
