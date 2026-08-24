@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private session-analysis candidate result",
+  "type": "object",
+  "required": ["schema_version", "result_type", "packet_id", "candidates"],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["candidate-learning/v1"]},
+    "result_type": {"type": "string", "enum": ["candidates", "no_learning"]},
+    "packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{24}$"},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "topic",
+          "learning_type",
+          "claim_label",
+          "summary",
+          "transferability_rationale",
+          "confidence",
+          "session_kind",
+          "evidence_uris"
+        ],
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^candidate-[a-f0-9]{24}$"},
+          "topic": {
+            "type": "string",
+            "enum": [
+              "demand_generation",
+              "paid_advertising",
+              "seo",
+              "content_marketing",
+              "attribution_measurement",
+              "product_marketing",
+              "activation_onboarding",
+              "leadership_strategy",
+              "ai_and_marketing_operations"
+            ]
+          },
+          "learning_type": {
+            "type": "string",
+            "enum": ["metric", "finding", "formula", "win", "loss", "callout", "channel"]
+          },
+          "claim_label": {"type": "string", "enum": ["[DATA]", "[LOGIC]", "[HYPOTHESIS]"]},
+          "summary": {"type": "string"},
+          "transferability_rationale": {"type": "string"},
+          "confidence": {"type": "string", "enum": ["high", "medium", "low", "?"]},
+          "session_kind": {"type": "string"},
+          "evidence_uris": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^session://(?:codex|claude)/artifact-[a-f0-9]{24}@[a-f0-9]{64}#event=event-[a-f0-9]{24}$"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "no_learning_reason": {"type": "string"}
+  },
+  "additionalProperties": false
+}

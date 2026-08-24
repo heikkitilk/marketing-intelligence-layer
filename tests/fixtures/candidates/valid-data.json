@@ -1,0 +1,20 @@
+{
+  "schema_version": "candidate-learning/v1",
+  "result_type": "candidates",
+  "packet_id": "packet-aaaaaaaaaaaaaaaaaaaaaaaa",
+  "candidates": [
+    {
+      "candidate_id": "candidate-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "paid_advertising",
+      "learning_type": "finding",
+      "claim_label": "[DATA]",
+      "summary": "A campaign decision was supported by an observed tool result.",
+      "transferability_rationale": "The decision rule can be reused when the same marketing signal is observed.",
+      "confidence": "medium",
+      "session_kind": "interactive",
+      "evidence_uris": [
+        "session://claude/artifact-aaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#event=event-aaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    }
+  ]
+}

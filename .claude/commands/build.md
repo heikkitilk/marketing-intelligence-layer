@@ -8,6 +8,24 @@ Three modes:
 - **`/build`** — read notes from the local `raw/` folder
 - **`/build drive`** — read notes from a Google Drive folder
 - **`/build setup`** — change your name, role, or topics (re-runs the setup questions)
+- **`/build sessions`** — create a private, no-egress U3 session-analysis preflight
+
+---
+
+## Sessions mode (`/build sessions`)
+
+Keep the existing build modes unchanged. For `/build sessions`, require the
+private U1 manifest, U2 packet manifest, U2 packet directory, and an ignored
+private output root, then run:
+
+```sh
+marketing-intelligence sessions --manifest <u1-manifest> --packet-manifest <u2-packet-manifest> --packet-root <u2-packets> --output-root <ignored-u3-root>
+```
+
+This command only accounts for dependence groups, writes resumable private
+work items, and enforces the resource envelope before dispatch. It never sends
+packet content to a provider. Do not dispatch provider work until U7 quality
+passes and the provider-affine release gate is verified.
 
 ---
 

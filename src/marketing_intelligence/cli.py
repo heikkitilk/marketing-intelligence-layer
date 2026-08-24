@@ -6,7 +6,10 @@ import argparse
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import stat
 from typing import Mapping, Sequence
 
 from .census import (
@@ -19,7 +22,9 @@ from .census import (
     validate_schema_document,
     write_census_private,
 )
+from .estimate import ResourceBudgetExceeded
 from .normalize import normalize_census, write_normalization_private
+from .routing import build_session_preflight, write_preflight_private
 
 
 def _safe_reason(error: BaseException) -> str:
@@ -47,6 +52,35 @@ def _safe_reason(error: BaseException) -> str:
         "private_output_permissions_unsafe",
         "private_output_symlink",
         "normalization_run_exists",
+        "preflight_manifest_records_invalid",
+        "preflight_manifest_record_invalid",
+        "preflight_manifest_artifact_invalid",
+        "preflight_manifest_duplicate_artifact",
+        "preflight_packet_manifest_invalid",
+        "preflight_packet_manifest_row_invalid",
+        "preflight_packet_manifest_identity_invalid",
+        "preflight_packet_manifest_duplicate_packet",
+        "preflight_packet_artifact_not_in_manifest",
+        "preflight_packet_not_eligible",
+        "preflight_packet_harness_mismatch",
+        "preflight_packet_document_missing",
+        "preflight_packet_document_identity_mismatch",
+        "preflight_packet_document_manifest_mismatch",
+        "preflight_packet_document_event_coverage_mismatch",
+        "preflight_packet_document_shape_invalid",
+        "preflight_prompt_sha256_invalid",
+        "preflight_policy_version_invalid",
+        "preflight_unaccounted_dependence_groups",
+        "preflight_representative_not_in_packet_manifest",
+        "preflight_work_plan_immutable_mismatch",
+        "preflight_receipt_immutable_mismatch",
+        "classification_compact_packet_exceeds_cap",
+        "classification_packet_bytes_exceeds_ktd15_cap",
+        "private_packet_root_invalid",
+        "private_packet_file_invalid",
+        "private_packet_file_missing",
+        "private_packet_file_shape_invalid",
+        "private_packet_file_unsafe",
     }
     message = str(error)
     return message if message in known else "census_command_failed"
@@ -300,6 +334,134 @@ def _normalize_command(arguments: argparse.Namespace) -> int:
     return 0 if result.coverage_complete and bool(source_integrity["opened_descriptor_bytes_unchanged_during_read"]) and deterministic else 2
 
 
+def _load_json_mapping(path: Path, *, reason: str) -> dict[str, object]:
+    """Read a local JSON metadata object without exposing its path in errors."""
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(reason) from error
+    if not isinstance(value, dict):
+        raise ValueError(reason)
+    return value
+
+
+def _read_private_packet(path: Path) -> dict[str, object]:
+    """Read one U2 packet through a no-follow regular-file boundary."""
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError("private_packet_file_missing") from error
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid():
+            raise ValueError("private_packet_file_unsafe")
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as stream:
+            value = json.load(stream)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("private_packet_file_invalid") from error
+    finally:
+        os.close(descriptor)
+    if not isinstance(value, dict):
+        raise ValueError("private_packet_file_shape_invalid")
+    return value
+
+
+def _load_private_packet_documents(packet_manifest: Mapping[str, object], packet_root: Path) -> dict[str, dict[str, object]]:
+    """Load only U2 prepared packets, never raw source transcripts."""
+
+    candidate_root = Path(packet_root)
+    try:
+        details = os.lstat(candidate_root)
+    except OSError as error:
+        raise ValueError("private_packet_root_invalid") from error
+    if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode) or details.st_uid != os.getuid():
+        raise ValueError("private_packet_root_invalid")
+    rows = packet_manifest.get("packets")
+    if not isinstance(rows, list):
+        raise ValueError("preflight_packet_manifest_invalid")
+    packets: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("terminal_outcome") != "prepared_no_egress":
+            continue
+        packet_id = row.get("packet_id")
+        if not isinstance(packet_id, str) or re.fullmatch(r"packet-[a-f0-9]{24}", packet_id) is None:
+            raise ValueError("preflight_packet_manifest_identity_invalid")
+        if packet_id in packets:
+            raise ValueError("preflight_packet_manifest_duplicate_packet")
+        packets[packet_id] = _read_private_packet(candidate_root / f"{packet_id}.json")
+    return packets
+
+
+def _sessions_policy_version(packet_manifest: Mapping[str, object]) -> str:
+    """Bind a plan to both U2 redaction and injected-context policy versions."""
+
+    policy = {
+        "redaction_policy_version": packet_manifest.get("redaction_policy_version", "?"),
+        "fingerprint_policy_version": packet_manifest.get("fingerprint_policy_version", "?"),
+    }
+    return hashlib.sha256(canonical_json(policy).encode("utf-8")).hexdigest()
+
+
+def _sessions_command(arguments: argparse.Namespace) -> int:
+    """Plan and checkpoint U3 classification work without provider egress."""
+
+    try:
+        manifest = _load_json_mapping(arguments.manifest, reason="preflight_manifest_records_invalid")
+        packet_manifest = _load_json_mapping(arguments.packet_manifest, reason="preflight_packet_manifest_invalid")
+        packet_documents = _load_private_packet_documents(packet_manifest, arguments.packet_root)
+        prompt_text = (_REPOSITORY_ROOT / "prompts" / "session-analysis.md").read_text(encoding="utf-8")
+        prompt_sha256 = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+        preflight = build_session_preflight(
+            manifest,
+            packet_manifest,
+            packet_documents,
+            prompt_sha256=prompt_sha256,
+            policy_version=_sessions_policy_version(packet_manifest),
+        )
+        output = write_preflight_private(preflight, arguments.output_root)
+    except ResourceBudgetExceeded as error:
+        print(canonical_json({
+            "status": "reduced_scope_resource_envelope",
+            "reason": "r25_pre_dispatch_cap",
+            "dimension": error.dimension,
+            "actual": error.actual,
+            "limit": error.limit,
+            "provider_dispatch": "not_started",
+        }))
+        return 2
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error), "provider_dispatch": "not_started"}))
+        return 2
+
+    estimate = preflight.resource_estimate
+    print(canonical_json({
+        "status": "preflight_planned_no_provider_egress",
+        "eligible_groups": preflight.coverage["eligible_group_count"],
+        "classification_work_items": preflight.coverage["classification_work_item_count"],
+        "classification_calls": preflight.coverage["classification_call_count"],
+        "unaccounted_groups": preflight.coverage["unaccounted_group_count"],
+        "estimated_input_tokens": estimate.input_tokens,
+        "estimated_output_tokens": estimate.output_tokens,
+        "estimated_calls": estimate.calls,
+        "estimated_wall_minutes": estimate.wall_minutes,
+        "estimated_monetary_cost_usd": estimate.monetary_cost_usd,
+        "concurrency": estimate.concurrency,
+        "per_call_minutes": estimate.per_call_minutes,
+        "created_work_items": output.created_work_items,
+        "pending_work_items": output.pending_work_items,
+        "receipt_sha256": output.receipt_sha256,
+        "release_plan_sha256": output.release_plan_sha256,
+        "provider_dispatch": "blocked_u7_quality_gate",
+        "mode": "private_no_provider_egress",
+    }))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run a no-egress census with explicitly configured local roots."""
 
@@ -316,11 +478,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     normalize.add_argument("--manifest", type=Path, required=True, help="private U1 manifest JSON")
     normalize.add_argument("--output-root", type=Path, required=True, help="new ignored private output root")
     normalize.add_argument("--verify-determinism", action="store_true", help="run normalization twice before private packet write")
+    sessions = subcommands.add_parser("sessions", help="plan U3 session classification from private U1 and U2 outputs")
+    sessions.add_argument("--manifest", type=Path, required=True, help="private U1 manifest JSON")
+    sessions.add_argument("--packet-manifest", type=Path, required=True, help="private U2 packet manifest JSON")
+    sessions.add_argument("--packet-root", type=Path, required=True, help="private U2 redacted packet directory")
+    sessions.add_argument("--output-root", type=Path, required=True, help="ignored private U3 preflight root")
     arguments = parser.parse_args(argv)
     if arguments.command == "census":
         return _census_command(arguments)
     if arguments.command == "normalize":
         return _normalize_command(arguments)
+    if arguments.command == "sessions":
+        return _sessions_command(arguments)
     parser.error("unknown command")
     return 2
 
