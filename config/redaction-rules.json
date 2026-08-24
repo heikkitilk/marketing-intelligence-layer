@@ -1,0 +1,46 @@
+{
+  "version": "u8-redaction-v1",
+  "credential_patterns": [
+    {
+      "id": "aws_access_key",
+      "pattern": "\\bAKIA[0-9A-Z]{16}\\b"
+    },
+    {
+      "id": "openai_key",
+      "pattern": "\\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\\b"
+    },
+    {
+      "id": "anthropic_key",
+      "pattern": "\\bsk-ant-[A-Za-z0-9_-]{20,}\\b"
+    },
+    {
+      "id": "github_token",
+      "pattern": "\\bgh[pousr]_[A-Za-z0-9_]{20,}\\b"
+    },
+    {
+      "id": "bearer_token",
+      "pattern": "(?i)\\bbearer\\s+[A-Za-z0-9._~+/-]{20,}"
+    }
+  ],
+  "redaction_patterns": [
+    {
+      "id": "email",
+      "pattern": "(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b",
+      "replacement": "[REDACTED:email]"
+    },
+    {
+      "id": "phone",
+      "pattern": "(?<!\\w)(?:\\+?\\d[\\d .()/-]{7,}\\d)(?!\\w)",
+      "replacement": "[REDACTED:phone]"
+    },
+    {
+      "id": "absolute_local_path",
+      "pattern": "(?<![A-Za-z0-9])/(?:Users|private|var|tmp)/[^\\s\\\"'<>]{2,}",
+      "replacement": "[REDACTED:local-path]"
+    }
+  ],
+  "unsafe_markup_patterns": [
+    "(?i)<\\s*(?:script|style|iframe|object|embed|svg|math)\\b",
+    "(?i)on[a-z]+\\s*="
+  ]
+}

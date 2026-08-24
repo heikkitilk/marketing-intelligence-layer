@@ -1,0 +1,30 @@
+{
+  "version": "u8-injected-context-v1",
+  "fingerprints": [
+    {
+      "id": "fixture_injected_policy",
+      "start": "INJECTED_POLICY_BEGIN",
+      "end": "INJECTED_POLICY_END"
+    },
+    {
+      "id": "codex_memory_summary",
+      "start": "========= MEMORY_SUMMARY BEGINS =========",
+      "end": "========= MEMORY_SUMMARY ENDS ========="
+    },
+    {
+      "id": "codex_skills_context",
+      "start": "<skills_instructions>",
+      "end": "</skills_instructions>"
+    },
+    {
+      "id": "codex_permissions_context",
+      "start": "<permissions instructions>",
+      "end": "</permissions instructions>"
+    },
+    {
+      "id": "agent_instructions_context",
+      "start": "<INSTRUCTIONS>",
+      "end": "</INSTRUCTIONS>"
+    }
+  ]
+}
