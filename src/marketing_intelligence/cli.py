@@ -24,6 +24,7 @@ from .census import (
 )
 from .estimate import ResourceBudgetExceeded
 from .normalize import normalize_census, write_normalization_private
+from .quality import PilotArtifactStore, QualityPilotError, select_reference_packets
 from .routing import build_session_preflight, write_preflight_private
 
 
@@ -83,7 +84,7 @@ def _safe_reason(error: BaseException) -> str:
         "private_packet_file_unsafe",
     }
     message = str(error)
-    return message if message in known else "census_command_failed"
+    return message if message in known or message.startswith("quality_") or message.startswith("codex_packets_") or message.startswith("claude_packets_") else "census_command_failed"
 
 
 def _private_safe_source_delta(first: object, second: object) -> dict[str, int]:
@@ -462,6 +463,65 @@ def _sessions_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _quality_pilot_prepare_command(arguments: argparse.Namespace) -> int:
+    """Freeze a U1-bound, unlabeled U7 reviewer packet, or receipt a hard sample block."""
+
+    try:
+        packet_manifest = _load_json_mapping(arguments.packet_manifest, reason="quality_packet_manifest_invalid")
+        source_manifest = _load_json_mapping(arguments.source_manifest, reason="quality_source_manifest_invalid")
+        packet_documents = _load_private_packet_documents(packet_manifest, arguments.packet_root)
+        selection = select_reference_packets(packet_manifest, source_manifest, packet_documents)
+        store = PilotArtifactStore(arguments.output_root, fresh=True)
+        if selection.hard_blockers:
+            receipt = store.write_reduced_scope_selection_receipt(selection)
+            print(canonical_json({
+                "status": "reduced_scope",
+                "reasons": list(selection.hard_blockers),
+                "blocked_units": ["U4", "U5", "U6"],
+                "selection_sha256": selection.selection_sha256,
+                "proposed_packet_count": len(selection.selected_packet_ids),
+                "selected_stratum_counts": selection.document["selected_stratum_counts"],
+                "absent_optional_strata": list(selection.absent_optional_strata),
+                "absent_required_strata": list(selection.absent_required_strata),
+                "metadata_absences": selection.document["metadata_absences"],
+                "receipt_sha256": receipt.sha256,
+                "reviewer_packet": "not_frozen",
+                "provider_dispatch": "not_started",
+            }))
+            return 2
+        packets = {
+            packet_id: packet_documents[packet_id]
+            for packet_id in selection.selected_packet_ids
+        }
+        frozen = store.freeze_reference_set(
+            selection,
+            packets,
+            _REPOSITORY_ROOT / "schemas" / "quality-reviewer-label.schema.json",
+        )
+    except (OSError, ValueError, json.JSONDecodeError, QualityPilotError) as error:
+        print(canonical_json({
+            "status": "failed",
+            "reason": _safe_reason(error),
+            "provider_dispatch": "not_started",
+        }))
+        return 2
+
+    print(canonical_json({
+        "status": "reviewer_packet_frozen",
+        "selection_sha256": selection.selection_sha256,
+        "reference_set_sha256": frozen.reference_set_sha256,
+        "selected_packet_count": frozen.packet_count,
+        "selected_stratum_counts": selection.document["selected_stratum_counts"],
+        "substitution_count": len(selection.substitutions),
+        "absent_optional_strata": list(selection.absent_optional_strata),
+        "absent_required_strata": list(selection.absent_required_strata),
+        "metadata_absences": selection.document["metadata_absences"],
+        "provider_dispatch": "not_started",
+        "mode": "private_no_provider_egress",
+    }))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run a no-egress census with explicitly configured local roots."""
 
@@ -483,6 +543,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     sessions.add_argument("--packet-manifest", type=Path, required=True, help="private U2 packet manifest JSON")
     sessions.add_argument("--packet-root", type=Path, required=True, help="private U2 redacted packet directory")
     sessions.add_argument("--output-root", type=Path, required=True, help="ignored private U3 preflight root")
+    quality_pilot = subcommands.add_parser("quality-pilot", help="prepare or score the private U7 blind quality pilot")
+    quality_commands = quality_pilot.add_subparsers(dest="quality_command", required=True)
+    quality_prepare = quality_commands.add_parser("prepare", help="join U1/U2 metadata and freeze an unlabeled private reviewer packet")
+    quality_prepare.add_argument("--source-manifest", type=Path, required=True, help="private U1 source manifest JSON")
+    quality_prepare.add_argument("--packet-manifest", type=Path, required=True, help="private U2 packet manifest JSON")
+    quality_prepare.add_argument("--packet-root", type=Path, required=True, help="private U2 redacted packet directory")
+    quality_prepare.add_argument("--output-root", type=Path, required=True, help="fresh ignored private U7 output root")
     arguments = parser.parse_args(argv)
     if arguments.command == "census":
         return _census_command(arguments)
@@ -490,6 +557,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _normalize_command(arguments)
     if arguments.command == "sessions":
         return _sessions_command(arguments)
+    if arguments.command == "quality-pilot" and arguments.quality_command == "prepare":
+        return _quality_pilot_prepare_command(arguments)
     parser.error("unknown command")
     return 2
 

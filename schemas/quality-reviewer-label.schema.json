@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private U7 blind reviewer labels",
+  "type": "object",
+  "required": ["schema_version", "selection_sha256", "labels"],
+  "properties": {
+    "schema_version": {"const": "quality-reviewer-labels/v1"},
+    "selection_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "packet_id",
+          "expected_outcome",
+          "approved_data_evidence_uris",
+          "approved_topics",
+          "requires_relevance",
+          "requires_transferability",
+          "baseline_novel",
+          "non_harness_useful"
+        ],
+        "properties": {
+          "packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{24}$"},
+          "expected_outcome": {"type": "string", "enum": ["learning", "no_learning"]},
+          "approved_data_evidence_uris": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^session://(?:codex|claude)/artifact-[a-f0-9]{24}@[a-f0-9]{64}#event=event-[a-f0-9]{24}$"}
+          },
+          "approved_topics": {"type": "array", "items": {"type": "string"}},
+          "requires_relevance": {"type": "boolean"},
+          "requires_transferability": {"type": "boolean"},
+          "baseline_novel": {"type": "boolean"},
+          "non_harness_useful": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
