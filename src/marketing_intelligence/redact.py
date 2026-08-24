@@ -86,6 +86,7 @@ class _FingerprintRule:
     start: str
     end: str
     expected_hashes: frozenset[str]
+    allowed_provenance: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -168,7 +169,25 @@ def _load_fingerprint_policy(path_text: str) -> _FingerprintPolicy:
         expected_hashes = frozenset(
             value for value in configured_hashes if isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value)
         ) if isinstance(configured_hashes, (list, tuple, frozenset)) else frozenset()
-        rules.append(_FingerprintRule(identifier=identifier, start=start, end=end, expected_hashes=expected_hashes))
+        if not expected_hashes:
+            raise ValueError("injected_context_fingerprint_hash_missing")
+        configured_provenance = entry.get("provenance", ())
+        if isinstance(configured_provenance, str):
+            configured_provenance = (configured_provenance,)
+        allowed_provenance = frozenset(
+            value
+            for value in configured_provenance
+            if isinstance(value, str) and value
+        ) if isinstance(configured_provenance, (list, tuple, frozenset)) else frozenset()
+        rules.append(
+            _FingerprintRule(
+                identifier=identifier,
+                start=start,
+                end=end,
+                expected_hashes=expected_hashes,
+                allowed_provenance=allowed_provenance,
+            )
+        )
     unknown_patterns = tuple(re.compile(str(pattern)) for pattern in config.get("unknown_instruction_patterns", ()))
     version = config.get("version")
     if not isinstance(version, str) or not version:
@@ -226,8 +245,14 @@ def inspect_injected_context(
     text: str,
     *,
     fingerprints_path: Path = _DEFAULT_FINGERPRINTS_PATH,
+    provenance: str | None = None,
 ) -> ContextInspection:
-    """Strip registered R24 blocks and fail closed on changed or unknown blocks."""
+    """Strip registered R24 blocks and fail closed on changed or unknown blocks.
+
+    A configured context block is known only when its normalized digest matches.
+    If the policy also constrains provenance, callers must provide the observed
+    harness record shape that carried the block.
+    """
 
     policy = _load_fingerprint_policy(_cache_key(fingerprints_path))
     remaining = text
@@ -254,7 +279,15 @@ def inspect_injected_context(
             end_index += len(rule.end)
             removed = remaining[start_index:end_index]
             digest = normalized_fingerprint(removed)
-            if rule.expected_hashes and digest not in rule.expected_hashes:
+            if digest not in rule.expected_hashes:
+                return ContextInspection(
+                    status=RedactionStatus.QUARANTINED,
+                    reason="unknown_injected_context",
+                    text=None,
+                    excluded_injected_blocks=excluded,
+                    excluded_fingerprints=tuple(sorted(fingerprints)),
+                )
+            if rule.allowed_provenance and provenance not in rule.allowed_provenance:
                 return ContextInspection(
                     status=RedactionStatus.QUARANTINED,
                     reason="unknown_injected_context",

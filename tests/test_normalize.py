@@ -17,7 +17,7 @@ from marketing_intelligence.normalize import (
     validate_packet_coverage,
     write_normalization_private,
 )
-from marketing_intelligence.redact import scan_for_unsafe_content
+from marketing_intelligence.redact import normalized_fingerprint, scan_for_unsafe_content
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +42,103 @@ def read_fixture(name: str) -> list[dict[str, object]]:
 
 
 class NormalizeRecordTests(unittest.TestCase):
+    def test_codex_response_item_and_turn_context_frames_are_hash_bound(self):
+        known_context = "<environment_context>\nknown captured environment\n</environment_context>"
+        fingerprint_policy = {
+            "version": "characterization-v1",
+            "fingerprints": [{
+                "id": "codex_environment_context",
+                "start": "<environment_context>",
+                "end": "</environment_context>",
+                "normalized_sha256": [normalized_fingerprint(known_context)],
+                "provenance": ["codex:response_item:message", "codex:turn_context:?"],
+            }],
+            "unknown_instruction_patterns": [
+                "(?is)<\\s*/?\\s*(?:(?:[A-Za-z0-9_-]+[\\s:_-])?(?:instructions?|policy|memory|startup)(?![A-Za-z0-9])|system(?![A-Za-z0-9]))[A-Za-z0-9_:\\-\\s]*>",
+            ],
+        }
+        records = [
+            {
+                "timestamp": "2026-08-20T12:00:00Z",
+                "type": "turn_context",
+                "payload": {
+                    "turn_id": "turn-1",
+                    "current_date": "2026-08-20",
+                    "cwd": "/workspace",
+                    "workspace_roots": ["/workspace"],
+                    "permission_profile": {"type": "disabled"},
+                    "sandbox_policy": {"type": "unrestricted"},
+                    "summary": known_context,
+                },
+            },
+            {
+                "timestamp": "2026-08-20T12:01:00Z",
+                "type": "world_state",
+                "payload": {"state": {"environments": {"filesystem": "<filesystem>read-only</filesystem>"}}},
+            },
+            {
+                "timestamp": "2026-08-20T12:02:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "developer-frame",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": known_context}],
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
+                },
+            },
+            {
+                "timestamp": "2026-08-20T12:03:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "user-message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Campaign goal is qualified demand."}],
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
+                },
+            },
+            {
+                "timestamp": "2026-08-20T12:04:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "assistant-message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Measure conversion quality by source."}],
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            fingerprints_path = Path(temporary) / "fingerprints.json"
+            fingerprints_path.write_text(json.dumps(fingerprint_policy), encoding="utf-8")
+            safe = normalize_records(
+                artifact("codex", event_count=len(records)),
+                records,
+                window_start=WINDOW_START,
+                cutoff=CUTOFF,
+                fingerprints_path=fingerprints_path,
+            )
+            changed_records = json.loads(json.dumps(records))
+            changed_records[0]["payload"]["summary"] = "<environment_context>\nchanged context\n</environment_context>"
+            changed = normalize_records(
+                artifact("codex", event_count=len(changed_records)),
+                changed_records,
+                window_start=WINDOW_START,
+                cutoff=CUTOFF,
+                fingerprints_path=fingerprints_path,
+            )
+
+        self.assertEqual(safe.terminal_status, "complete")
+        self.assertEqual([event["role"] for event in safe.events], ["user", "assistant"])
+        self.assertEqual(safe.excluded_injected_blocks, 2)
+        self.assertEqual(safe.injected_provenance, {"response_item": 1, "turn_context": 1})
+        self.assertNotIn("environment_context", json.dumps(safe.packets))
+        self.assertEqual(changed.terminal_status, "quarantined")
+        self.assertEqual(changed.reason, "unknown_injected_context")
+        self.assertNotIn("changed context", json.dumps(changed.coverage))
+
     def test_maps_cross_harness_records_to_ordered_stable_events(self):
         codex = normalize_records(
             artifact("codex", event_count=4),

@@ -275,6 +275,17 @@ def _text_leaves(value: Any) -> Iterable[str]:
             yield from _text_leaves(item)
 
 
+def _injected_context_provenance(harness: str, record: Mapping[str, Any]) -> str:
+    """Return the source-record shape used to authorize a known R24 block."""
+
+    record_type = str(record.get("type", "unknown"))
+    if harness != "codex":
+        return f"{harness}:{record_type}"
+    payload = record.get("payload")
+    payload_type = str(payload.get("type", "?")) if isinstance(payload, Mapping) else "?"
+    return f"codex:{record_type}:{payload_type}"
+
+
 def _empty_coverage(
     artifact_id: str,
     harness: str,
@@ -458,9 +469,14 @@ def normalize_records(
         source_ordinal += 1
         source_event_id = _stable_source_event_id(artifact_id, source_version, source_ordinal)
         record_type = str(source_record.get("type", "unknown"))
+        provenance = _injected_context_provenance(harness, source_record)
         record_exclusions = 0
         for text_leaf in _text_leaves(source_record):
-            inspection = inspect_injected_context(text_leaf, fingerprints_path=fingerprints_path)
+            inspection = inspect_injected_context(
+                text_leaf,
+                fingerprints_path=fingerprints_path,
+                provenance=provenance,
+            )
             record_exclusions += inspection.excluded_injected_blocks
             excluded_blocks += inspection.excluded_injected_blocks
             fingerprints.update(inspection.excluded_fingerprints)
@@ -490,7 +506,11 @@ def normalize_records(
         candidates = _codex_candidates(source_record, seen_item_ids) if harness == "codex" else _claude_candidates(source_record)
         record_event_ids: list[str] = []
         for candidate in candidates:
-            inspection = inspect_injected_context(candidate.text, fingerprints_path=fingerprints_path)
+            inspection = inspect_injected_context(
+                candidate.text,
+                fingerprints_path=fingerprints_path,
+                provenance=provenance,
+            )
             if inspection.status is RedactionStatus.QUARANTINED:
                 coverage_entries.append(
                     {
