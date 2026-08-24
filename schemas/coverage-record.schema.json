@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private session census coverage ledger",
+  "type": "object",
+  "required": ["schema_version", "window", "records", "summary"],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["coverage-record/v1"]},
+    "window": {
+      "type": "object",
+      "required": ["start", "cutoff"],
+      "properties": {
+        "start": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"},
+        "cutoff": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"}
+      },
+      "additionalProperties": false
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifact_id", "harness", "terminal_status", "reason", "in_window", "manifest_content_sha256"],
+        "properties": {
+          "artifact_id": {"type": "string", "pattern": "^artifact-[a-f0-9]{24}$"},
+          "harness": {"type": "string", "enum": ["codex", "claude"]},
+          "terminal_status": {"type": "string", "enum": ["complete", "excluded", "quarantined", "failed"]},
+          "reason": {"type": "string"},
+          "in_window": {"type": "boolean"},
+          "manifest_content_sha256": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {"type": "object"}
+  },
+  "additionalProperties": false
+}

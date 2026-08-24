@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-24T14:57:36Z","type":"session_meta","payload":{"id":"codex-after-cutoff","source":"cli","cwd":"/workspace/marketing-intelligence-layer"}}
+{"timestamp":"2026-08-24T15:00:00Z","type":"event_msg","payload":{"event_id":"too-late"}}

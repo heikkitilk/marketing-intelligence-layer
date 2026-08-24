@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private session census manifest",
+  "type": "object",
+  "required": ["schema_version", "window", "records", "summary"],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["session-manifest/v1"]},
+    "window": {
+      "type": "object",
+      "required": ["start", "cutoff"],
+      "properties": {
+        "start": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"},
+        "cutoff": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"}
+      },
+      "additionalProperties": false
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "artifact_id", "harness", "logical_session_id", "session_container_id", "parent_logical_session_id", "parent_artifact_id", "sidechain", "source_kind", "entry_point", "session_kind", "classification", "dependence_group_id", "dependence_fields", "in_window_canonical_bytes", "in_window_event_count", "first_in_window_timestamp", "last_in_window_timestamp", "content_sha256", "terminal_status", "reason", "in_window"
+        ],
+        "properties": {
+          "artifact_id": {"type": "string", "pattern": "^artifact-[a-f0-9]{24}$"},
+          "harness": {"type": "string", "enum": ["codex", "claude"]},
+          "logical_session_id": {"type": "string"},
+          "session_container_id": {"type": "string"},
+          "parent_logical_session_id": {"type": "string"},
+          "parent_artifact_id": {"type": "string"},
+          "sidechain": {"type": ["boolean", "string"], "enum": [true, false, "?"]},
+          "source_kind": {"type": "string", "enum": ["root_conversation", "child_agent", "unknown"]},
+          "entry_point": {"type": "string"},
+          "session_kind": {"type": "string"},
+          "classification": {
+            "type": "object",
+            "required": ["execution_shape", "working_directory"],
+            "properties": {
+              "execution_shape": {
+                "type": "object",
+                "required": ["value", "provenance", "rule"],
+                "properties": {
+                  "value": {"type": "string", "enum": ["sdk", "interactive", "synthetic_test", "unknown"]},
+                  "provenance": {"type": "string", "enum": ["observed", "inferred", "unknown"]},
+                  "rule": {"type": "string"}
+                },
+                "additionalProperties": false
+              },
+              "working_directory": {
+                "type": "object",
+                "required": ["value", "provenance", "rule"],
+                "properties": {
+                  "value": {"type": "string", "enum": ["marketing_project", "synthetic_test", "documents", "other", "unknown"]},
+                  "provenance": {"type": "string", "enum": ["inferred", "unknown"]},
+                  "rule": {"type": "string"}
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "dependence_group_id": {"type": "string", "pattern": "^(?:dependence-[a-f0-9]{24}|\\?)$"},
+          "dependence_fields": {
+            "type": "object",
+            "required": ["harness", "group_anchor", "session_container_id", "parent_reference", "entry_point", "session_kind", "working_directory_category", "prompt_hash", "input_hash", "code_version", "configuration_version", "source_dataset", "injected_context_fingerprint"],
+            "properties": {
+              "harness": {"type": "string"},
+              "group_anchor": {"type": "string"},
+              "session_container_id": {"type": "string"},
+              "parent_reference": {"type": "string"},
+              "entry_point": {"type": "string"},
+              "session_kind": {"type": "string"},
+              "working_directory_category": {"type": "string"},
+              "prompt_hash": {"type": "string"},
+              "input_hash": {"type": "string"},
+              "code_version": {"type": "string"},
+              "configuration_version": {"type": "string"},
+              "source_dataset": {"type": "string"},
+              "injected_context_fingerprint": {"type": "string"}
+            },
+            "additionalProperties": false
+          },
+          "in_window_canonical_bytes": {"type": "integer", "minimum": 0},
+          "in_window_event_count": {"type": "integer", "minimum": 0},
+          "first_in_window_timestamp": {"type": "string"},
+          "last_in_window_timestamp": {"type": "string"},
+          "content_sha256": {"type": "string"},
+          "terminal_status": {"type": "string", "enum": ["complete", "excluded", "quarantined", "failed"]},
+          "reason": {"type": "string"},
+          "in_window": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {"type": "object"}
+  },
+  "additionalProperties": false
+}

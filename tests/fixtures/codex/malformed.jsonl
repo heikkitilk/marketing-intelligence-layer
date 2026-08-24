@@ -1,0 +1,3 @@
+{"timestamp":"2026-08-18T12:00:00Z","type":"session_meta","payload":{"id":"codex-malformed","source":"cli","cwd":"/workspace/marketing-intelligence-layer"}}
+{"timestamp":"2026-08-18T12:01:00Z","type":"future_record","payload":{"event_id":"unknown-record"}}
+{"this is":"not valid jsonl"

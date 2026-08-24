@@ -1,0 +1,2 @@
+{"type":"user","uuid":"claude-root-event","sessionId":"claude-shared","timestamp":"2026-08-18T13:00:00Z","entrypoint":"cli","isSidechain":false,"sessionKind":"interactive","cwd":"/workspace/marketing-intelligence-layer","message":{"role":"user","content":[]}}
+{"type":"assistant","uuid":"claude-root-assistant","sessionId":"claude-shared","timestamp":"2026-08-18T13:01:00Z","entrypoint":"cli","isSidechain":false,"sessionKind":"interactive","cwd":"/workspace/marketing-intelligence-layer","message":{"role":"assistant","content":[]}}

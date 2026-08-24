@@ -17,6 +17,11 @@ class ResourceLimits:
 
 
 R25_LIMITS = ResourceLimits()
+FULL_POC_LIMITS = ResourceLimits(
+    max_input_tokens=5_000_000,
+    max_calls=300,
+    max_wall_minutes=360,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,24 @@ class ResourceEstimate:
     concurrency: int
     per_call_minutes: int
     monetary_cost_usd: str = "?"
+
+
+@dataclass(frozen=True)
+class TieredStageEstimate:
+    """KTD19 estimate derived from manifest groups and bounded packet policy."""
+
+    artifact_count: int
+    dependence_group_count: int
+    in_window_event_count: int
+    classification_representative_count: int
+    full_extract_group_count: int
+    mixed_sample_group_count: int
+    full_stage_group_count: int
+    classification_groups_per_call: int
+    full_extract_groups_per_call: int
+    classification_calls: int
+    full_extract_calls: int
+    resource_estimate: ResourceEstimate
 
 
 class ResourceBudgetExceeded(RuntimeError):
@@ -109,3 +132,135 @@ def enforce_r25(estimate: ResourceEstimate, limits: ResourceLimits = R25_LIMITS)
     for dimension, actual, limit in checks:
         if actual > limit:
             raise ResourceBudgetExceeded(dimension, actual, limit)
+
+
+def _groups_per_call(*, item_bytes: int, max_packet_bytes: int, max_packet_tokens: int, bytes_per_token: int, stage: str) -> int:
+    """Return a capacity that cannot exceed either KTD15 packet limit."""
+
+    packet_payload_limit = min(max_packet_bytes, max_packet_tokens * bytes_per_token)
+    if item_bytes > packet_payload_limit:
+        raise ValueError(f"{stage}_packet_bytes_exceeds_ktd15_cap")
+    return packet_payload_limit // item_bytes
+
+
+def _batched_packet_bytes(*, item_count: int, item_bytes: int, groups_per_call: int) -> tuple[int, ...]:
+    """Make bounded serialized payload sizes without creating provider calls."""
+
+    return tuple(
+        min(groups_per_call, item_count - offset) * item_bytes
+        for offset in range(0, item_count, groups_per_call)
+    )
+
+
+def estimate_tiered_stage(
+    *,
+    artifact_count: int,
+    dependence_group_count: int,
+    in_window_event_count: int,
+    full_extract_fraction: float = 0.10,
+    mixed_sample_fraction: float = 0.05,
+    classification_packet_bytes: int = 1_024,
+    full_packet_bytes: int = 10_240,
+    max_packet_bytes: int = 100 * 1024,
+    max_packet_tokens: int = 32_000,
+    bytes_per_token: int = 3,
+    prompt_tokens: int = 800,
+    output_tokens_per_call: int = 5_000,
+    concurrency: int = 2,
+    per_call_minutes: int = 20,
+) -> TieredStageEstimate:
+    """Estimate KTD18's tiered stage from manifest counts, not transcript text.
+
+    Every dependence group remains in scope, but multiple redacted group
+    representatives may share one provider request. ``*_packet_bytes`` must
+    include each representative's serialized redacted content and packet
+    framing. Calls are packed below both KTD15 limits: 100 KiB and 32,000
+    estimated tokens by default. U2 must re-estimate from the actual packets
+    before dispatch; this preflight never authorizes an oversized packet.
+    """
+
+    scalar_values = (
+        artifact_count,
+        dependence_group_count,
+        in_window_event_count,
+        classification_packet_bytes,
+        full_packet_bytes,
+        max_packet_bytes,
+        max_packet_tokens,
+        bytes_per_token,
+        prompt_tokens,
+        output_tokens_per_call,
+        concurrency,
+        per_call_minutes,
+    )
+    if any(value < 0 for value in scalar_values):
+        raise ValueError("tiered estimation inputs must be non-negative")
+    if not 0 <= full_extract_fraction <= 1 or not 0 <= mixed_sample_fraction <= 1:
+        raise ValueError("tier fractions must be between zero and one")
+    if min(
+        classification_packet_bytes,
+        full_packet_bytes,
+        max_packet_bytes,
+        max_packet_tokens,
+        bytes_per_token,
+        concurrency,
+        per_call_minutes,
+    ) <= 0:
+        raise ValueError("packet and execution limits must be positive")
+
+    classification_groups_per_call = _groups_per_call(
+        item_bytes=classification_packet_bytes,
+        max_packet_bytes=max_packet_bytes,
+        max_packet_tokens=max_packet_tokens,
+        bytes_per_token=bytes_per_token,
+        stage="classification",
+    )
+    full_extract_groups_per_call = _groups_per_call(
+        item_bytes=full_packet_bytes,
+        max_packet_bytes=max_packet_bytes,
+        max_packet_tokens=max_packet_tokens,
+        bytes_per_token=bytes_per_token,
+        stage="full_extract",
+    )
+    classification_representative_count = dependence_group_count
+    full_extract_group_count = ceil(dependence_group_count * full_extract_fraction) if dependence_group_count else 0
+    mixed_sample_group_count = ceil(dependence_group_count * mixed_sample_fraction) if dependence_group_count else 0
+    full_stage_group_count = min(dependence_group_count, full_extract_group_count + mixed_sample_group_count)
+    classification_calls = ceil(classification_representative_count / classification_groups_per_call) if classification_representative_count else 0
+    full_extract_calls = ceil(full_stage_group_count / full_extract_groups_per_call) if full_stage_group_count else 0
+    total_calls = classification_calls + full_extract_calls
+    packet_bytes = (
+        _batched_packet_bytes(
+            item_count=classification_representative_count,
+            item_bytes=classification_packet_bytes,
+            groups_per_call=classification_groups_per_call,
+        )
+        + _batched_packet_bytes(
+            item_count=full_stage_group_count,
+            item_bytes=full_packet_bytes,
+            groups_per_call=full_extract_groups_per_call,
+        )
+    )
+    estimate = estimate_probe_resources(
+        packet_bytes=packet_bytes,
+        prompt_tokens=prompt_tokens,
+        output_tokens_per_call=output_tokens_per_call,
+        calls=total_calls,
+        concurrency=concurrency,
+        per_call_minutes=per_call_minutes,
+        bytes_per_token=bytes_per_token,
+    )
+    return TieredStageEstimate(
+        artifact_count=artifact_count,
+        dependence_group_count=dependence_group_count,
+        in_window_event_count=in_window_event_count,
+        classification_representative_count=classification_representative_count,
+        full_extract_group_count=full_extract_group_count,
+        mixed_sample_group_count=mixed_sample_group_count,
+        full_stage_group_count=full_stage_group_count,
+        classification_groups_per_call=classification_groups_per_call,
+        full_extract_groups_per_call=full_extract_groups_per_call,
+        classification_calls=classification_calls,
+        full_extract_calls=full_extract_calls,
+        resource_estimate=estimate,
+    )
