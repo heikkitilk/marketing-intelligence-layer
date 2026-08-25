@@ -1167,8 +1167,11 @@ def evaluate_quality_pilot(
 
     expected_learning = 0
     relevance_numerator = 0
+    relevance_denominator = 0
     transferability_numerator = 0
+    transferability_denominator = 0
     novelty_numerator = 0
+    novelty_denominator = 0
     no_learning_numerator = 0
     data_numerator = 0
     data_denominator = 0
@@ -1199,6 +1202,12 @@ def evaluate_quality_pilot(
         if expected_no_learning:
             continue
         expected_learning += 1
+        if bool(label["requires_relevance"]):
+            relevance_denominator += 1
+        if bool(label["requires_transferability"]):
+            transferability_denominator += 1
+        if bool(label["baseline_novel"]) and bool(label["non_harness_useful"]):
+            novelty_denominator += 1
         relevant = False
         transferable = False
         novel_and_useful = False
@@ -1240,10 +1249,10 @@ def evaluate_quality_pilot(
 
     metrics: dict[str, dict[str, Any]] = {
         "data_faithfulness": _metric(data_numerator, data_denominator, 1.0),
-        "relevance": _metric(relevance_numerator, expected_learning, 0.8),
-        "transferability": _metric(transferability_numerator, expected_learning, 0.7),
+        "relevance": _metric(relevance_numerator, relevance_denominator, 0.8),
+        "transferability": _metric(transferability_numerator, transferability_denominator, 0.7),
         "no_learning_accuracy": _metric(no_learning_numerator, len(selection.selected_packet_ids), 0.8),
-        "novelty_non_harness_usefulness": _metric(novelty_numerator, expected_learning, 1.0),
+        "novelty_non_harness_usefulness": _metric(novelty_numerator, novelty_denominator, 1.0),
         "false_exact_deduplication_collapses": {
             "count": false_exact_deduplications,
             "maximum": 0,

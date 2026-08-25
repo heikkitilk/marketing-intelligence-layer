@@ -23,7 +23,7 @@ from typing import Any, Mapping, Sequence
 
 from .census import canonical_json
 from .checkpoint import CheckpointStore
-from .estimate import R25_LIMITS, ResourceBudgetExceeded, ResourceEstimate, estimate_probe_resources, enforce_r25
+from .estimate import FULL_POC_LIMITS, ResourceBudgetExceeded, ResourceEstimate, estimate_probe_resources, enforce_r25
 from .extraction import approved_packet_fields, stable_candidate_id, validate_candidate_document, validate_provider_release
 from .quality import (
     EXTRACTOR_RESULTS_SCHEMA_VERSION,
@@ -40,7 +40,8 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _PROMPT_PATH = _REPOSITORY_ROOT / "prompts" / "session-analysis.md"
 _CANDIDATE_SCHEMA_PATH = _REPOSITORY_ROOT / "schemas" / "candidate-learning.schema.json"
 
-QUALITY_EXECUTION_POLICY_VERSION = "quality-pilot-execution/v1"
+QUALITY_EXECUTION_POLICY_VERSION = "quality-pilot-execution/v2"
+QUALITY_EXECUTION_DIRECTORY = "execution-v2"
 QUALITY_EXECUTION_PREFLIGHT_SCHEMA_VERSION = "quality-pilot-extraction-preflight/v1"
 QUALITY_PROVIDER_RESULT_SCHEMA_VERSION = "quality-pilot-provider-result/v1"
 QUALITY_PACKET_RESULT_SCHEMA_VERSION = "quality-pilot-packet-result/v1"
@@ -49,10 +50,10 @@ QUALITY_EXECUTION_LEDGER_SCHEMA_VERSION = "quality-pilot-execution-ledger/v1"
 CLAUDE_EXECUTION_SURFACE = "anthropic-claude-cli"
 CODEX_EXECUTION_SURFACE = "authenticated-first-party-codex-seat"
 
-# U7 uses the U8 R25 envelope: 24 calls is the hard maximum.  Two concurrent
-# seven-minute calls complete in 84 minutes, leaving six minutes below R25's
-# 90-minute wall-time ceiling.  The conservative token conversion remains the
-# project-wide three bytes per token.
+# U7 is part of the full proof-of-concept model stage, so it uses R25's full
+# stage envelope rather than U8's smaller value-probe envelope. The selector
+# still fixes this pilot at 24 calls. The conservative token conversion remains
+# the project-wide three bytes per token.
 PILOT_CONCURRENCY = 2
 PILOT_PER_CALL_MINUTES = 7
 PILOT_TIMEOUT_SECONDS = PILOT_PER_CALL_MINUTES * 60
@@ -245,7 +246,7 @@ class _ExecutionArtifactStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).expanduser()
         _ensure_private_directory(self.root)
-        self.execution_root = self.root / "execution"
+        self.execution_root = self.root / QUALITY_EXECUTION_DIRECTORY
         _ensure_private_directory(self.execution_root)
         self.ledger_path = self.execution_root / "artifact-order.jsonl"
 
@@ -553,7 +554,7 @@ def build_quality_pilot_preflight(
     budget_failure = packet_cap_failure
     if budget_failure is None:
         try:
-            enforce_r25(estimate, R25_LIMITS)
+            enforce_r25(estimate, FULL_POC_LIMITS)
         except ResourceBudgetExceeded as error:
             budget_failure = {"dimension": error.dimension, "actual": error.actual, "limit": error.limit}
     status = "ready" if budget_failure is None else "reduced_scope"
@@ -570,7 +571,7 @@ def build_quality_pilot_preflight(
         "approved_fields": list(approved_packet_fields("full_extraction")),
         "work_items": [dict(item) for item in ordered_items],
         "resource_estimate": asdict(estimate),
-        "r25_limits": asdict(R25_LIMITS),
+        "r25_limits": asdict(FULL_POC_LIMITS),
         "r25_failure": budget_failure,
         "provider_packet_input_cap_bytes": MAX_PROVIDER_INPUT_BYTES,
         "provider_dispatch": "not_started",

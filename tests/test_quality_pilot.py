@@ -15,6 +15,7 @@ from unittest import mock
 from marketing_intelligence.census import canonical_json
 from marketing_intelligence.cli import main
 from marketing_intelligence.extraction import stable_candidate_id
+from marketing_intelligence.estimate import ResourceEstimate
 from marketing_intelligence.quality import (
     PilotArtifactStore,
     QualityPilotError,
@@ -25,6 +26,7 @@ from marketing_intelligence.quality import (
 from marketing_intelligence.quality_execution import (
     CLAUDE_EXECUTION_SURFACE,
     CODEX_EXECUTION_SURFACE,
+    QUALITY_EXECUTION_DIRECTORY,
     QUALITY_PROVIDER_RESULT_SCHEMA_VERSION,
     build_claude_cli_command,
     build_quality_pilot_preflight,
@@ -524,6 +526,29 @@ class PilotEvaluationTests(unittest.TestCase):
         self.assertFalse(evaluation.metrics["novelty_non_harness_usefulness"]["passed"])
         self.assertEqual(evaluation.blocked_units, ("U4", "U5", "U6"))
 
+    def test_conditional_quality_metrics_use_reviewer_eligible_denominators(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        labels = label_document(selection, packets)
+        for index, label in enumerate(labels["labels"]):
+            label["requires_transferability"] = index == 0
+            label["baseline_novel"] = index < 2
+            label["non_harness_useful"] = index < 2
+
+        evaluation = evaluate_quality_pilot(
+            selection,
+            packets,
+            labels,
+            extractor_results(selection, packets),
+        )
+
+        self.assertEqual(evaluation.metrics["relevance"]["denominator"], 24)
+        self.assertEqual(evaluation.metrics["transferability"]["denominator"], 1)
+        self.assertEqual(evaluation.metrics["novelty_non_harness_usefulness"]["denominator"], 2)
+        self.assertTrue(evaluation.metrics["transferability"]["passed"])
+        self.assertTrue(evaluation.metrics["novelty_non_harness_usefulness"]["passed"])
+
     def test_unsupported_data_claim_fails_faithfulness(self) -> None:
         rows = rich_rows()
         selection = fixture_selection(rows)
@@ -683,7 +708,7 @@ class PilotExecutionTests(unittest.TestCase):
             self.assertEqual(stdin_status, 0)
             self.assertTrue((stdin_root / "reviewer-labels.json").exists())
 
-    def test_preflight_is_deterministic_reports_r25_cap_before_egress(self) -> None:
+    def test_preflight_uses_full_poc_r25_cap_and_blocks_before_egress(self) -> None:
         rows = rich_rows()
         selection = fixture_selection(rows)
         packets = packet_documents(rows)
@@ -694,17 +719,41 @@ class PilotExecutionTests(unittest.TestCase):
             preflight = build_quality_pilot_preflight(store)
             receipt = write_quality_pilot_preflight(store, preflight)
 
-            self.assertEqual(preflight.status, "reduced_scope")
+            self.assertEqual(preflight.status, "ready")
             self.assertEqual(preflight.resource_estimate.calls, 24)
             self.assertEqual(preflight.resource_estimate.concurrency, 2)
             self.assertEqual(preflight.resource_estimate.wall_minutes, 84)
-            self.assertEqual(preflight.budget_failure["dimension"], "input_tokens")
+            self.assertIsNone(preflight.budget_failure)
             self.assertEqual(receipt.status, "written")
-            stored = json.loads((store.root / "execution" / "preflight.json").read_text(encoding="utf-8"))
-            self.assertEqual((store.root / "execution").stat().st_mode & 0o777, 0o700)
-            self.assertEqual((store.root / "execution" / "preflight.json").stat().st_mode & 0o777, 0o600)
+            execution_root = store.root / QUALITY_EXECUTION_DIRECTORY
+            stored = json.loads((execution_root / "preflight.json").read_text(encoding="utf-8"))
+            self.assertEqual(execution_root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((execution_root / "preflight.json").stat().st_mode & 0o777, 0o600)
             self.assertEqual(stored["provider_dispatch"], "not_started")
-            self.assertEqual(stored["blocked_units"], ["U4", "U5", "U6"])
+            self.assertEqual(stored["blocked_units"], [])
+            self.assertEqual(stored["r25_limits"]["max_input_tokens"], 5_000_000)
+
+            blocked_store = frozen_labeled_store(selection, packets, Path(temporary) / "blocked-pilot")
+            over_limit = ResourceEstimate(
+                input_tokens=5_000_001,
+                output_tokens=84_000,
+                calls=24,
+                wall_minutes=84,
+                packet_bytes=1,
+                prompt_tokens=1,
+                retry_overhead_tokens=0,
+                bytes_per_token=3,
+                concurrency=2,
+                per_call_minutes=7,
+            )
+            with mock.patch(
+                "marketing_intelligence.quality_execution.estimate_probe_resources",
+                return_value=over_limit,
+            ):
+                blocked = build_quality_pilot_preflight(blocked_store)
+            self.assertEqual(blocked.status, "reduced_scope")
+            self.assertEqual(blocked.budget_failure["dimension"], "input_tokens")
+            self.assertEqual(blocked.document["provider_dispatch"], "not_started")
 
     def test_provider_affinity_rejects_cross_provider_and_claude_fallback(self) -> None:
         rows = rich_rows()
@@ -740,7 +789,7 @@ class PilotExecutionTests(unittest.TestCase):
                     },
                     expected_harness="claude",
                 )
-            self.assertFalse((store.root / "execution" / "packet-results" / f"{packet_id}.json").exists())
+            self.assertFalse((store.root / QUALITY_EXECUTION_DIRECTORY / "packet-results" / f"{packet_id}.json").exists())
 
     def test_provider_ingestion_assigns_stable_ids_for_placeholder_and_missing_ids(self) -> None:
         rows = rich_rows()
@@ -753,7 +802,7 @@ class PilotExecutionTests(unittest.TestCase):
             document = candidate_document(packets[packet_id])
             document["candidates"][0]["candidate_id"] = "candidate-" + ("0" * 24)
             result = stage_provider_result(store, preflight, packets[packet_id], document=document)
-            stored = json.loads((store.root / "execution" / "packet-results" / f"{packet_id}.json").read_text(encoding="utf-8"))
+            stored = json.loads((store.root / QUALITY_EXECUTION_DIRECTORY / "packet-results" / f"{packet_id}.json").read_text(encoding="utf-8"))
             assigned = stored["document"]["candidates"][0]["candidate_id"]
 
             self.assertEqual(result.terminal_status, "extracted")
@@ -856,7 +905,7 @@ class PilotExecutionTests(unittest.TestCase):
             self.assertIn("--no-session-persistence", command)
             self.assertNotIn("--fallback-model", command)
             self.assertEqual(run.call_args.kwargs["timeout"], 120)
-            checkpoint = json.loads((store.root / "execution" / "claude-checkpoints" / "terminal-results.jsonl").read_text(encoding="utf-8"))
+            checkpoint = json.loads((store.root / QUALITY_EXECUTION_DIRECTORY / "claude-checkpoints" / "terminal-results.jsonl").read_text(encoding="utf-8"))
             self.assertEqual(checkpoint["terminal_status"], "extracted")
 
     def test_claude_repeated_identical_failure_becomes_terminal_without_fallback(self) -> None:
@@ -877,9 +926,9 @@ class PilotExecutionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "quality_claude_execution_terminal_failure"):
                     execute_claude_packet(store, packet_id=packet_id, release=release)
 
-            terminal = json.loads((store.root / "execution" / "claude-checkpoints" / "terminal-results.jsonl").read_text(encoding="utf-8"))
+            terminal = json.loads((store.root / QUALITY_EXECUTION_DIRECTORY / "claude-checkpoints" / "terminal-results.jsonl").read_text(encoding="utf-8"))
             self.assertEqual(terminal["terminal_status"], "failed")
-            self.assertNotIn("provider output", (store.root / "execution" / "claude-checkpoints" / "attempts.jsonl").read_text(encoding="utf-8"))
+            self.assertNotIn("provider output", (store.root / QUALITY_EXECUTION_DIRECTORY / "claude-checkpoints" / "attempts.jsonl").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

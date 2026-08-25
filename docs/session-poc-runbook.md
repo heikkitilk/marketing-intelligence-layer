@@ -122,7 +122,7 @@ The preflight reserves `1,200` prompt tokens and `3,500` output tokens per
 packet, uses the conservative three-bytes-per-token conversion, limits the
 Claude timeout to seven minutes, and uses two concurrent calls. That produces
 an 84-minute upper wall-time bound for 24 calls. If any R25 limit is exceeded,
-the command writes an immutable `execution/preflight.json` reduced-scope
+the command writes an immutable `execution-v2/preflight.json` reduced-scope
 receipt, returns exit status `2`, blocks U4-U6, and makes provider dispatch
 unavailable. It also blocks egress when one approved packet exceeds the smaller
 of `100 KiB` and `32,000` estimated input tokens. Claude result output is
