@@ -10,6 +10,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from marketing_intelligence.census import canonical_json
 from marketing_intelligence.cli import main
@@ -20,6 +21,17 @@ from marketing_intelligence.quality import (
     QualityPilotOrderError,
     evaluate_quality_pilot,
     select_reference_packets,
+)
+from marketing_intelligence.quality_execution import (
+    CLAUDE_EXECUTION_SURFACE,
+    CODEX_EXECUTION_SURFACE,
+    QUALITY_PROVIDER_RESULT_SCHEMA_VERSION,
+    build_claude_cli_command,
+    build_quality_pilot_preflight,
+    combine_and_score_quality_pilot,
+    execute_claude_packet,
+    ingest_provider_result,
+    write_quality_pilot_preflight,
 )
 
 
@@ -258,6 +270,80 @@ def extractor_results(
         "documents": documents or [candidate_document(packets[packet_id]) for packet_id in getattr(selection, "selected_packet_ids")],
         "exact_deduplications": exact_deduplications or [],
     }
+
+
+def frozen_labeled_store(selection: object, packets: dict[str, dict[str, object]], root: Path) -> PilotArtifactStore:
+    """Make the frozen-label state that every U7 execution test starts from."""
+
+    store = PilotArtifactStore(root, require_ignored=False)
+    store.freeze_reference_set(selection, packets, FIXTURES / "reviewer-label.schema.json")
+    store.write_reviewer_labels(label_document(selection, packets))
+    return store
+
+
+def provider_release(work_item: dict[str, object], *, harness: str) -> dict[str, object]:
+    """A synthetic verified first-party receipt with no provider output body."""
+
+    release: dict[str, object] = {
+        "provider": "anthropic" if harness == "claude" else "openai",
+        "account": "authenticated-first-party-claude" if harness == "claude" else "authenticated-first-party-codex",
+        "account_verified": True,
+        "authentication_verified": True,
+        "model": "claude-sonnet-5" if harness == "claude" else "gpt-5.6-terra",
+        "model_verified": True,
+        "model_available_verified": True,
+        "prompt_sha256": work_item["prompt_sha256"],
+        "policy_version": work_item["policy_version"],
+        "approved_fields": work_item["approved_fields"],
+        "raw_tools": [],
+        "encrypted_transport_verified": True,
+        "work_item_id": work_item["work_item_id"],
+        "analysis_packet_sha256": work_item["analysis_packet_sha256"],
+    }
+    if harness == "claude":
+        release.update({
+            "execution_surface": CLAUDE_EXECUTION_SURFACE,
+            "tools_disabled": True,
+            "persistence_disabled": True,
+            "timeout_seconds": 420,
+            "max_budget_usd": "1.00",
+        })
+    else:
+        release.update({
+            "execution_surface": CODEX_EXECUTION_SURFACE,
+            "seat_verified": True,
+        })
+    return release
+
+
+def write_u7_preflight(store: PilotArtifactStore) -> object:
+    preflight = build_quality_pilot_preflight(store)
+    if preflight.status != "ready":
+        raise AssertionError(f"fixture preflight unexpectedly {preflight.status}")
+    write_quality_pilot_preflight(store, preflight)
+    return preflight
+
+
+def stage_provider_result(
+    store: PilotArtifactStore,
+    preflight: object,
+    packet: dict[str, object],
+    *,
+    document: dict[str, object] | None = None,
+) -> object:
+    work_items = {item["packet_id"]: item for item in getattr(preflight, "work_items")}
+    packet_id = str(packet["packet_id"])
+    harness = str(packet["harness"])
+    return ingest_provider_result(
+        store,
+        {
+            "schema_version": QUALITY_PROVIDER_RESULT_SCHEMA_VERSION,
+            "packet_id": packet_id,
+            "release": provider_release(work_items[packet_id], harness=harness),
+            "document": document or candidate_document(packet),
+        },
+        expected_harness=harness,
+    )
 
 
 class PilotSelectionTests(unittest.TestCase):
@@ -518,6 +604,282 @@ class PilotEvaluationTests(unittest.TestCase):
         self.assertEqual(evaluation.metrics["false_exact_deduplication_collapses"]["count"], 1)
         self.assertFalse(evaluation.metrics["false_exact_deduplication_collapses"]["passed"])
         self.assertEqual(evaluation.status, "reduced_scope")
+
+
+class PilotExecutionTests(unittest.TestCase):
+    def test_labels_cli_validates_before_immutable_write_and_never_echoes_body(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        private_parent = ROOT / ".u8-private"
+        with tempfile.TemporaryDirectory(dir=private_parent) as temporary:
+            root = Path(temporary) / "pilot"
+            store = PilotArtifactStore(root, require_ignored=False)
+            store.freeze_reference_set(selection, packets, FIXTURES / "reviewer-label.schema.json")
+            labels_path = Path(temporary) / "labels.json"
+            labels = label_document(selection, packets)
+            labels_path.write_text(json.dumps(labels), encoding="utf-8")
+            labels_path.chmod(0o600)
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                status = main([
+                    "quality-pilot",
+                    "labels",
+                    "--output-root", str(root),
+                    "--input-file", str(labels_path),
+                ])
+            output = stream.getvalue()
+
+            self.assertEqual(status, 0)
+            self.assertIn("reviewer_labels_written", output)
+            self.assertNotIn("approved_data_evidence_uris", output)
+            self.assertNotIn(str(labels["labels"][0]["approved_data_evidence_uris"][0]), output)
+            self.assertTrue((root / "reviewer-labels.json").exists())
+
+            preflight_stream = io.StringIO()
+            with contextlib.redirect_stdout(preflight_stream):
+                preflight_status = main([
+                    "quality-pilot",
+                    "preflight",
+                    "--output-root", str(root),
+                    "--input-usd-per-million", "1.00",
+                    "--output-usd-per-million", "2.00",
+                ])
+            preflight_output = json.loads(preflight_stream.getvalue())
+            self.assertEqual(preflight_status, 0)
+            self.assertEqual(preflight_output["status"], "preflight_ready")
+            self.assertEqual(preflight_output["projected_call_count"], 24)
+            self.assertEqual(preflight_output["projected_concurrency"], 2)
+            self.assertNotEqual(preflight_output["projected_monetary_cost_usd"], "?")
+            self.assertNotIn("events", preflight_stream.getvalue())
+
+            invalid_path = Path(temporary) / "invalid-labels.json"
+            invalid_path.write_text(json.dumps({"schema_version": "quality-reviewer-labels/v1"}), encoding="utf-8")
+            invalid_path.chmod(0o600)
+            fresh_root = Path(temporary) / "fresh-pilot"
+            fresh_store = PilotArtifactStore(fresh_root, require_ignored=False)
+            fresh_store.freeze_reference_set(selection, packets, FIXTURES / "reviewer-label.schema.json")
+            with contextlib.redirect_stdout(io.StringIO()):
+                invalid_status = main([
+                    "quality-pilot",
+                    "labels",
+                    "--output-root", str(fresh_root),
+                    "--input-file", str(invalid_path),
+                ])
+            self.assertEqual(invalid_status, 2)
+            self.assertFalse((fresh_root / "reviewer-labels.json").exists())
+
+            stdin_root = Path(temporary) / "stdin-pilot"
+            stdin_store = PilotArtifactStore(stdin_root, require_ignored=False)
+            stdin_store.freeze_reference_set(selection, packets, FIXTURES / "reviewer-label.schema.json")
+            stdin_stream = io.TextIOWrapper(io.BytesIO(json.dumps(labels).encode("utf-8")), encoding="utf-8")
+            with mock.patch("sys.stdin", stdin_stream), contextlib.redirect_stdout(io.StringIO()):
+                stdin_status = main([
+                    "quality-pilot",
+                    "labels",
+                    "--output-root", str(stdin_root),
+                    "--stdin",
+                ])
+            self.assertEqual(stdin_status, 0)
+            self.assertTrue((stdin_root / "reviewer-labels.json").exists())
+
+    def test_preflight_is_deterministic_reports_r25_cap_before_egress(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        for packet in packets.values():
+            packet["events"][0]["text"] = "marketing decision " + ("x" * 64_000)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = build_quality_pilot_preflight(store)
+            receipt = write_quality_pilot_preflight(store, preflight)
+
+            self.assertEqual(preflight.status, "reduced_scope")
+            self.assertEqual(preflight.resource_estimate.calls, 24)
+            self.assertEqual(preflight.resource_estimate.concurrency, 2)
+            self.assertEqual(preflight.resource_estimate.wall_minutes, 84)
+            self.assertEqual(preflight.budget_failure["dimension"], "input_tokens")
+            self.assertEqual(receipt.status, "written")
+            stored = json.loads((store.root / "execution" / "preflight.json").read_text(encoding="utf-8"))
+            self.assertEqual((store.root / "execution").stat().st_mode & 0o777, 0o700)
+            self.assertEqual((store.root / "execution" / "preflight.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual(stored["provider_dispatch"], "not_started")
+            self.assertEqual(stored["blocked_units"], ["U4", "U5", "U6"])
+
+    def test_provider_affinity_rejects_cross_provider_and_claude_fallback(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            packet_id = next(packet_id for packet_id in selection.selected_packet_ids if packets[packet_id]["harness"] == "claude")
+            work_items = {item["packet_id"]: item for item in getattr(preflight, "work_items")}
+            release = provider_release(work_items[packet_id], harness="claude")
+            document = candidate_document(packets[packet_id])
+
+            with self.assertRaisesRegex(ValueError, "quality_provider_release_rejected"):
+                ingest_provider_result(
+                    store,
+                    {
+                        "schema_version": QUALITY_PROVIDER_RESULT_SCHEMA_VERSION,
+                        "packet_id": packet_id,
+                        "release": {**release, "provider": "openai"},
+                        "document": document,
+                    },
+                    expected_harness="claude",
+                )
+            with self.assertRaisesRegex(ValueError, "quality_provider_release_rejected"):
+                ingest_provider_result(
+                    store,
+                    {
+                        "schema_version": QUALITY_PROVIDER_RESULT_SCHEMA_VERSION,
+                        "packet_id": packet_id,
+                        "release": {**release, "fallback_model": "anything"},
+                        "document": document,
+                    },
+                    expected_harness="claude",
+                )
+            self.assertFalse((store.root / "execution" / "packet-results" / f"{packet_id}.json").exists())
+
+    def test_provider_ingestion_assigns_stable_ids_for_placeholder_and_missing_ids(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            packet_id = selection.selected_packet_ids[0]
+            document = candidate_document(packets[packet_id])
+            document["candidates"][0]["candidate_id"] = "candidate-" + ("0" * 24)
+            result = stage_provider_result(store, preflight, packets[packet_id], document=document)
+            stored = json.loads((store.root / "execution" / "packet-results" / f"{packet_id}.json").read_text(encoding="utf-8"))
+            assigned = stored["document"]["candidates"][0]["candidate_id"]
+
+            self.assertEqual(result.terminal_status, "extracted")
+            self.assertEqual(assigned, stable_candidate_id(packet_id, stored["document"]["candidates"][0]))
+            self.assertNotEqual(assigned, "candidate-" + ("0" * 24))
+
+    def test_invalid_output_has_a_terminal_rejection_without_echoing_candidate_body(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            packet_id = selection.selected_packet_ids[0]
+            invalid = candidate_document(packets[packet_id])
+            invalid["candidates"][0]["unexpected_private_body"] = "never print this"
+            result = stage_provider_result(store, preflight, packets[packet_id], document=invalid)
+
+            self.assertEqual(result.terminal_status, "rejected_invalid")
+            self.assertGreater(len(result.validation_errors), 0)
+            self.assertFalse((store.root / "extractor-results.json").exists())
+
+    def test_combination_requires_all_24_terminal_packet_results(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            for packet_id in selection.selected_packet_ids[:-1]:
+                stage_provider_result(store, preflight, packets[packet_id])
+
+            with self.assertRaisesRegex(ValueError, "quality_execution_terminal_coverage_incomplete"):
+                combine_and_score_quality_pilot(store)
+            self.assertFalse((store.root / "extractor-results.json").exists())
+            self.assertFalse((store.root / "pilot-gate-receipt.json").exists())
+
+    def test_combination_writes_bound_reduced_scope_score_receipt(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            for index, packet_id in enumerate(selection.selected_packet_ids):
+                document = candidate_document(packets[packet_id])
+                if index == 0:
+                    document["candidates"][0]["unexpected_private_body"] = "never print this"
+                stage_provider_result(store, preflight, packets[packet_id], document=document)
+            combination = combine_and_score_quality_pilot(store)
+            gate = json.loads((store.root / "pilot-gate-receipt.json").read_text(encoding="utf-8"))
+            combined = json.loads((store.root / "extractor-results.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(combination.status, "reduced_scope")
+            self.assertEqual(combination.blocked_units, ("U4", "U5", "U6"))
+            self.assertEqual(gate["status"], "reduced_scope")
+            self.assertEqual(gate["blocked_units"], ["U4", "U5", "U6"])
+            self.assertEqual(gate["reviewer_labels_sha256"], combined["reviewer_labels_sha256"])
+            self.assertEqual(gate["extractor_results_sha256"], combination.extractor_results_sha256)
+            self.assertEqual(gate["terminal_outcome_count"], 24)
+            self.assertIn("candidate_document_validity", gate["failing_metrics"])
+
+    def test_claude_command_disables_tools_persistence_and_fallback(self) -> None:
+        work_item = {
+            "prompt_sha256": "prompt-a",
+            "policy_version": "policy-a",
+            "approved_fields": [],
+            "work_item_id": "work-aaaaaaaaaaaaaaaaaaaaaaaa",
+            "analysis_packet_sha256": "a" * 64,
+        }
+        command = build_claude_cli_command(provider_release(work_item, harness="claude"))
+
+        self.assertIn("--tools", command)
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertIn("--no-session-persistence", command)
+        self.assertIn("--strict-mcp-config", command)
+        self.assertIn("--json-schema", command)
+        self.assertNotIn("--fallback-model", command)
+
+    def test_claude_execution_uses_only_the_constrained_cli_and_stages_no_body_in_logs(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            packet_id = next(packet_id for packet_id in selection.selected_packet_ids if packets[packet_id]["harness"] == "claude")
+            work_items = {item["packet_id"]: item for item in getattr(preflight, "work_items")}
+            release = provider_release(work_items[packet_id], harness="claude")
+            release["timeout_seconds"] = 120
+            response = mock.Mock(returncode=0, stdout=json.dumps({"result": json.dumps(candidate_document(packets[packet_id]))}))
+
+            with mock.patch("marketing_intelligence.quality_execution.subprocess.run", return_value=response) as run:
+                result = execute_claude_packet(store, packet_id=packet_id, release=release)
+
+            self.assertEqual(result.terminal_status, "extracted")
+            command = run.call_args.args[0]
+            self.assertEqual(command[0], "claude")
+            self.assertEqual(command[command.index("--tools") + 1], "")
+            self.assertIn("--no-session-persistence", command)
+            self.assertNotIn("--fallback-model", command)
+            self.assertEqual(run.call_args.kwargs["timeout"], 120)
+            checkpoint = json.loads((store.root / "execution" / "claude-checkpoints" / "terminal-results.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint["terminal_status"], "extracted")
+
+    def test_claude_repeated_identical_failure_becomes_terminal_without_fallback(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            packet_id = next(packet_id for packet_id in selection.selected_packet_ids if packets[packet_id]["harness"] == "claude")
+            work_items = {item["packet_id"]: item for item in getattr(preflight, "work_items")}
+            release = provider_release(work_items[packet_id], harness="claude")
+            failed_response = mock.Mock(returncode=7, stdout="", stderr="provider output must not surface")
+
+            with mock.patch("marketing_intelligence.quality_execution.subprocess.run", return_value=failed_response):
+                with self.assertRaisesRegex(ValueError, "quality_claude_execution_failed"):
+                    execute_claude_packet(store, packet_id=packet_id, release=release)
+                with self.assertRaisesRegex(ValueError, "quality_claude_execution_terminal_failure"):
+                    execute_claude_packet(store, packet_id=packet_id, release=release)
+
+            terminal = json.loads((store.root / "execution" / "claude-checkpoints" / "terminal-results.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(terminal["terminal_status"], "failed")
+            self.assertNotIn("provider output", (store.root / "execution" / "claude-checkpoints" / "attempts.jsonl").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

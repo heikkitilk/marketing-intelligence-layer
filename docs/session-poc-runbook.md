@@ -75,6 +75,137 @@ The labels artifact must be written before any extractor result artifact. The
 immutable store rejects extractor results without the labels hash and rejects
 late labels after extractor results exist.
 
+### Ingest the blind labels
+
+The labels document is private input. Keep a file input mode `0600`, or supply
+the complete JSON document on standard input. The command validates the
+complete document against the frozen selection and observed reviewer-packet
+evidence before it writes `reviewer-labels.json`. It prints only hashes and
+counts, never label content.
+
+```sh
+chmod 600 <private-labels>.json
+PYTHONPATH=src python3 -m marketing_intelligence.cli quality-pilot labels \
+  --output-root .u8-private/u7-quality-pilot-<run-id> \
+  --input-file <private-labels>.json
+```
+
+To use standard input, use this exact command. Do not redirect an untrusted or
+shared file into the command.
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli quality-pilot labels \
+  --output-root .u8-private/u7-quality-pilot-<run-id> \
+  --stdin < <private-labels>.json
+```
+
+### Preflight the 24 extraction packets
+
+Run preflight after immutable labels exist and before any provider release. It
+projects only the approved redacted packet fields: `packet_id`, `harness`,
+`source_version`, `event_ids`, and redacted `events`. It reports input tokens,
+output tokens, 24-call count, two-call concurrency, concurrency-adjusted wall
+time, and monetary cost when you supply current input and output prices. It
+does not print packet or candidate bodies.
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli quality-pilot preflight \
+  --output-root .u8-private/u7-quality-pilot-<run-id> \
+  --input-usd-per-million <current-input-price> \
+  --output-usd-per-million <current-output-price>
+```
+
+Omit both price flags when no current provider price is available. The output
+then reports `projected_monetary_cost_usd: "?"`.
+
+The preflight reserves `1,200` prompt tokens and `3,500` output tokens per
+packet, uses the conservative three-bytes-per-token conversion, limits the
+Claude timeout to seven minutes, and uses two concurrent calls. That produces
+an 84-minute upper wall-time bound for 24 calls. If any R25 limit is exceeded,
+the command writes an immutable `execution/preflight.json` reduced-scope
+receipt, returns exit status `2`, blocks U4-U6, and makes provider dispatch
+unavailable. It also blocks egress when one approved packet exceeds the smaller
+of `100 KiB` and `32,000` estimated input tokens. Claude result output is
+bounded to `256 KiB` before JSON parsing.
+
+### Extract and ingest provider-affine results
+
+Only run these commands after preflight reports `preflight_ready`.
+
+For a Claude packet, use the built-in first-party Claude CLI path. The private
+release file must attest to the authenticated first-party Claude account, an
+available verified model, first-party encrypted transport, the preflight work
+item and packet hashes, disabled tools, disabled persistence, a bounded timeout
+of at most seven minutes, and a bounded per-call budget. The command invokes
+`claude --print` with `--tools ""`, `--no-session-persistence`, safe mode,
+strict MCP configuration, a JSON schema, and no fallback model. It does not
+retry automatically and never prints provider output. It records only a safe
+failure fingerprint in the private Claude checkpoint. One later attended retry
+is possible when it yields a different failure. Two consecutive identical
+failures become a terminal failed checkpoint and block another Claude call.
+
+```sh
+chmod 600 <private-claude-release>.json
+PYTHONPATH=src python3 -m marketing_intelligence.cli quality-pilot claude-extract \
+  --output-root .u8-private/u7-quality-pilot-<run-id> \
+  --packet-id <selected-claude-packet-id> \
+  --release-file <private-claude-release>.json
+```
+
+If the verified Claude CLI result arrives through a separate attended path,
+ingest its complete private result envelope instead. The envelope has schema
+version `quality-pilot-provider-result/v1` and binds `packet_id`, `release`,
+and `document`; its release must identify `anthropic-claude-cli`.
+
+```sh
+chmod 600 <private-claude-result>.json
+PYTHONPATH=src python3 -m marketing_intelligence.cli quality-pilot ingest-claude-result \
+  --output-root .u8-private/u7-quality-pilot-<run-id> \
+  --input-file <private-claude-result>.json
+```
+
+Codex has no cross-provider fallback. A verified authenticated first-party
+Codex seat must produce its result first. Its private envelope must bind the
+preflight work-item ID and packet hash, identify
+`authenticated-first-party-codex-seat`, and attest to first-party account,
+seat, available model, encrypted transport, and an empty raw-tools list. Then
+ingest it through the explicit Codex path.
+
+```sh
+chmod 600 <private-codex-result>.json
+PYTHONPATH=src python3 -m marketing_intelligence.cli quality-pilot ingest-codex-result \
+  --output-root .u8-private/u7-quality-pilot-<run-id> \
+  --input-file <private-codex-result>.json
+```
+
+Every ingestion normalizes each candidate ID in code from its packet ID and
+candidate body. Missing IDs, placeholder IDs, and provider-chosen IDs all
+become deterministic stable IDs before candidate-schema validation. An invalid
+candidate document is retained only in the private staging ledger with terminal
+status `rejected_invalid`; the command prints its count and hash, not its body.
+That terminal outcome creates a failed `candidate_document_validity` gate metric
+and blocks U4-U6. Provider-affinity or release failures are rejected before any
+result write.
+
+### Combine and score all terminal outcomes
+
+Run this only after every selected packet has one staged terminal outcome. The
+command fails closed without writing `extractor-results.json` when one of the
+24 packet outcomes is absent. It revalidates every document against
+`candidate-learning.schema.json`, writes exactly one
+`quality-extractor-results/v1` document bound to `reviewer_labels_sha256`,
+then evaluates and writes `pilot-gate-receipt.json`.
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli quality-pilot combine \
+  --output-root .u8-private/u7-quality-pilot-<run-id>
+```
+
+The command returns exit status `0` only for `passed`. Any failed quality
+metric returns exit status `2` after writing the immutable `reduced_scope`
+receipt. The receipt records the reviewer-label hash, extractor-results hash,
+24 terminal-outcome count, failed metrics, and `blocked_units: [U4, U5, U6]`.
+
 ### Score the pilot
 
 The evaluation applies the candidate schema and U2 evidence URI contract before
@@ -112,5 +243,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
 The first command covers deterministic strata and hash selection, blind-order
-gating, generic-candidate rejection, unsupported `[DATA]` rejection, failed
-threshold receipts, and false exact-deduplication detection.
+gating, private reviewer-label ingestion, R25 preflight caps, provider
+affinity, deterministic candidate IDs, invalid output handling, complete
+24-packet combination, failed-threshold receipts, and false
+exact-deduplication detection.

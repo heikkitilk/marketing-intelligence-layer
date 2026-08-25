@@ -25,6 +25,17 @@ from .census import (
 from .estimate import ResourceBudgetExceeded
 from .normalize import normalize_census, write_normalization_private
 from .quality import PilotArtifactStore, QualityPilotError, select_reference_packets
+from .quality_execution import (
+    QualityPilotExecutionError,
+    build_quality_pilot_preflight,
+    combine_and_score_quality_pilot,
+    execute_claude_packet,
+    ingest_provider_result,
+    load_private_json_input,
+    parse_quality_pilot_pricing,
+    read_stdin_private_json,
+    write_quality_pilot_preflight,
+)
 from .routing import build_session_preflight, write_preflight_private
 
 
@@ -522,6 +533,173 @@ def _quality_pilot_prepare_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _quality_private_input(arguments: argparse.Namespace) -> dict[str, object]:
+    """Read a private stdin or mode-0600 input without printing its contents."""
+
+    if getattr(arguments, "input_from_stdin", False):
+        return read_stdin_private_json()
+    return load_private_json_input(input_file=arguments.input_file)
+
+
+def _quality_pilot_labels_command(arguments: argparse.Namespace) -> int:
+    """Validate blind reviewer labels before their one immutable write."""
+
+    try:
+        labels = _quality_private_input(arguments)
+        store = PilotArtifactStore(arguments.output_root)
+        receipt = store.write_reviewer_labels(labels)
+        label_rows = labels.get("labels")
+        if not isinstance(label_rows, list):
+            raise QualityPilotExecutionError("quality_reviewer_labels_invalid")
+    except (OSError, ValueError, json.JSONDecodeError, QualityPilotError, QualityPilotExecutionError) as error:
+        print(canonical_json({
+            "status": "failed",
+            "reason": _safe_reason(error),
+            "provider_dispatch": "not_started",
+        }))
+        return 2
+
+    print(canonical_json({
+        "status": "reviewer_labels_written",
+        "selection_sha256": receipt.selection_sha256,
+        "reviewer_labels_sha256": receipt.sha256,
+        "label_count": len(label_rows),
+        "artifact_status": receipt.status,
+        "provider_dispatch": "not_started",
+        "mode": "private_no_provider_egress",
+    }))
+    return 0
+
+
+def _quality_pilot_preflight_command(arguments: argparse.Namespace) -> int:
+    """Project R25 usage for all frozen U7 packets before provider egress."""
+
+    try:
+        pricing = parse_quality_pilot_pricing(
+            arguments.input_usd_per_million,
+            arguments.output_usd_per_million,
+        )
+        store = PilotArtifactStore(arguments.output_root)
+        preflight = build_quality_pilot_preflight(store, pricing=pricing)
+        receipt = write_quality_pilot_preflight(store, preflight)
+    except (OSError, ValueError, json.JSONDecodeError, QualityPilotError, QualityPilotExecutionError) as error:
+        print(canonical_json({
+            "status": "failed",
+            "reason": _safe_reason(error),
+            "provider_dispatch": "not_started",
+        }))
+        return 2
+
+    estimate = preflight.resource_estimate
+    result = {
+        "status": "preflight_ready" if preflight.status == "ready" else "reduced_scope",
+        "selection_sha256": preflight.selection.selection_sha256,
+        "reviewer_labels_sha256": preflight.reviewer_labels_sha256,
+        "packet_count": len(preflight.work_items),
+        "projected_input_tokens": estimate.input_tokens,
+        "projected_output_tokens": estimate.output_tokens,
+        "projected_call_count": estimate.calls,
+        "projected_concurrency": estimate.concurrency,
+        "projected_wall_minutes": estimate.wall_minutes,
+        "projected_monetary_cost_usd": estimate.monetary_cost_usd,
+        "r25_failure": preflight.budget_failure,
+        "blocked_units": ["U4", "U5", "U6"] if preflight.status != "ready" else [],
+        "preflight_sha256": receipt.sha256,
+        "provider_dispatch": "not_started",
+        "mode": "private_no_provider_egress",
+    }
+    print(canonical_json(result))
+    return 0 if preflight.status == "ready" else 2
+
+
+def _quality_pilot_ingest_command(arguments: argparse.Namespace, *, harness: str) -> int:
+    """Ingest one verified provider result without exposing its candidate body."""
+
+    try:
+        envelope = _quality_private_input(arguments)
+        store = PilotArtifactStore(arguments.output_root)
+        result = ingest_provider_result(store, envelope, expected_harness=harness)
+    except (OSError, ValueError, json.JSONDecodeError, QualityPilotError, QualityPilotExecutionError) as error:
+        print(canonical_json({
+            "status": "failed",
+            "reason": _safe_reason(error),
+            "provider_dispatch": "not_started",
+        }))
+        return 2
+
+    print(canonical_json({
+        "status": "packet_result_staged",
+        "packet_id": result.packet_id,
+        "harness": result.harness,
+        "terminal_status": result.terminal_status,
+        "validation_error_count": len(result.validation_errors),
+        "document_sha256": result.document_sha256,
+        "artifact_status": result.receipt.status,
+        "provider_dispatch": "not_started",
+        "mode": "private_result_ingestion",
+    }))
+    return 0
+
+
+def _quality_pilot_claude_extract_command(arguments: argparse.Namespace) -> int:
+    """Use only the constrained first-party Claude CLI execution path."""
+
+    try:
+        release = load_private_json_input(input_file=arguments.release_file)
+        store = PilotArtifactStore(arguments.output_root)
+        result = execute_claude_packet(
+            store,
+            packet_id=arguments.packet_id,
+            release=release,
+        )
+    except (OSError, ValueError, json.JSONDecodeError, QualityPilotError, QualityPilotExecutionError) as error:
+        print(canonical_json({
+            "status": "failed",
+            "reason": _safe_reason(error),
+            "provider_dispatch": "not_started_or_failed",
+        }))
+        return 2
+
+    print(canonical_json({
+        "status": "packet_result_staged",
+        "packet_id": result.packet_id,
+        "harness": result.harness,
+        "terminal_status": result.terminal_status,
+        "validation_error_count": len(result.validation_errors),
+        "document_sha256": result.document_sha256,
+        "artifact_status": result.receipt.status,
+        "provider_dispatch": "completed_first_party_claude_cli",
+        "mode": "private_result_ingestion",
+    }))
+    return 0
+
+
+def _quality_pilot_combine_command(arguments: argparse.Namespace) -> int:
+    """Write the one complete extractor artifact and its terminal U7 receipt."""
+
+    try:
+        store = PilotArtifactStore(arguments.output_root)
+        combination = combine_and_score_quality_pilot(store)
+    except (OSError, ValueError, json.JSONDecodeError, QualityPilotError, QualityPilotExecutionError) as error:
+        print(canonical_json({
+            "status": "failed",
+            "reason": _safe_reason(error),
+            "provider_dispatch": "not_started",
+        }))
+        return 2
+
+    print(canonical_json({
+        "status": combination.status,
+        "extractor_results_sha256": combination.extractor_results_sha256,
+        "pilot_gate_receipt_sha256": combination.gate_receipt_sha256,
+        "failing_metrics": list(combination.failing_metrics),
+        "blocked_units": list(combination.blocked_units),
+        "provider_dispatch": "not_started",
+        "mode": "private_immutable_quality_gate",
+    }))
+    return 0 if combination.status == "passed" else 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run a no-egress census with explicitly configured local roots."""
 
@@ -550,6 +728,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     quality_prepare.add_argument("--packet-manifest", type=Path, required=True, help="private U2 packet manifest JSON")
     quality_prepare.add_argument("--packet-root", type=Path, required=True, help="private U2 redacted packet directory")
     quality_prepare.add_argument("--output-root", type=Path, required=True, help="fresh ignored private U7 output root")
+
+    quality_labels = quality_commands.add_parser("labels", help="validate and immutably ingest blind reviewer labels")
+    quality_labels.add_argument("--output-root", type=Path, required=True, help="existing ignored private U7 output root")
+    quality_labels_input = quality_labels.add_mutually_exclusive_group(required=True)
+    quality_labels_input.add_argument("--input-file", type=Path, help="mode-0600 private reviewer-label JSON file")
+    quality_labels_input.add_argument("--stdin", dest="input_from_stdin", action="store_true", help="read the reviewer-label JSON document from stdin")
+
+    quality_preflight = quality_commands.add_parser("preflight", help="estimate the frozen U7 extraction before provider egress")
+    quality_preflight.add_argument("--output-root", type=Path, required=True, help="existing ignored private U7 output root")
+    quality_preflight.add_argument("--input-usd-per-million", help="optional current provider input price in USD per million tokens")
+    quality_preflight.add_argument("--output-usd-per-million", help="optional current provider output price in USD per million tokens")
+
+    quality_ingest_codex = quality_commands.add_parser("ingest-codex-result", help="ingest one result from a verified first-party Codex seat")
+    quality_ingest_codex.add_argument("--output-root", type=Path, required=True, help="existing ignored private U7 output root")
+    quality_ingest_codex_input = quality_ingest_codex.add_mutually_exclusive_group(required=True)
+    quality_ingest_codex_input.add_argument("--input-file", type=Path, help="mode-0600 private provider-result JSON file")
+    quality_ingest_codex_input.add_argument("--stdin", dest="input_from_stdin", action="store_true", help="read the provider-result JSON document from stdin")
+
+    quality_ingest_claude = quality_commands.add_parser("ingest-claude-result", help="ingest one result from the constrained first-party Claude CLI")
+    quality_ingest_claude.add_argument("--output-root", type=Path, required=True, help="existing ignored private U7 output root")
+    quality_ingest_claude_input = quality_ingest_claude.add_mutually_exclusive_group(required=True)
+    quality_ingest_claude_input.add_argument("--input-file", type=Path, help="mode-0600 private provider-result JSON file")
+    quality_ingest_claude_input.add_argument("--stdin", dest="input_from_stdin", action="store_true", help="read the provider-result JSON document from stdin")
+
+    quality_claude_extract = quality_commands.add_parser("claude-extract", help="run one packet through the no-tools, no-persistence Claude CLI path")
+    quality_claude_extract.add_argument("--output-root", type=Path, required=True, help="existing ignored private U7 output root")
+    quality_claude_extract.add_argument("--packet-id", required=True, help="selected Claude packet identifier")
+    quality_claude_extract.add_argument("--release-file", type=Path, required=True, help="mode-0600 private verified Claude release JSON file")
+
+    quality_combine = quality_commands.add_parser("combine", help="combine all terminal U7 results and write the final immutable gate")
+    quality_combine.add_argument("--output-root", type=Path, required=True, help="existing ignored private U7 output root")
     arguments = parser.parse_args(argv)
     if arguments.command == "census":
         return _census_command(arguments)
@@ -559,6 +768,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _sessions_command(arguments)
     if arguments.command == "quality-pilot" and arguments.quality_command == "prepare":
         return _quality_pilot_prepare_command(arguments)
+    if arguments.command == "quality-pilot" and arguments.quality_command == "labels":
+        return _quality_pilot_labels_command(arguments)
+    if arguments.command == "quality-pilot" and arguments.quality_command == "preflight":
+        return _quality_pilot_preflight_command(arguments)
+    if arguments.command == "quality-pilot" and arguments.quality_command == "ingest-codex-result":
+        return _quality_pilot_ingest_command(arguments, harness="codex")
+    if arguments.command == "quality-pilot" and arguments.quality_command == "ingest-claude-result":
+        return _quality_pilot_ingest_command(arguments, harness="claude")
+    if arguments.command == "quality-pilot" and arguments.quality_command == "claude-extract":
+        return _quality_pilot_claude_extract_command(arguments)
+    if arguments.command == "quality-pilot" and arguments.quality_command == "combine":
+        return _quality_pilot_combine_command(arguments)
     parser.error("unknown command")
     return 2
 
