@@ -880,6 +880,7 @@ class PilotExecutionTests(unittest.TestCase):
         self.assertIn("--no-session-persistence", command)
         self.assertIn("--strict-mcp-config", command)
         self.assertIn("--json-schema", command)
+        self.assertNotIn("$schema", command[command.index("--json-schema") + 1])
         self.assertNotIn("--fallback-model", command)
 
     def test_claude_execution_uses_only_the_constrained_cli_and_stages_no_body_in_logs(self) -> None:
@@ -929,6 +930,31 @@ class PilotExecutionTests(unittest.TestCase):
             terminal = json.loads((store.root / QUALITY_EXECUTION_DIRECTORY / "claude-checkpoints" / "terminal-results.jsonl").read_text(encoding="utf-8"))
             self.assertEqual(terminal["terminal_status"], "failed")
             self.assertNotIn("provider output", (store.root / QUALITY_EXECUTION_DIRECTORY / "claude-checkpoints" / "attempts.jsonl").read_text(encoding="utf-8"))
+
+    def test_claude_failure_checkpoint_uses_only_safe_envelope_classification(self) -> None:
+        rows = rich_rows()
+        selection = fixture_selection(rows)
+        packets = packet_documents(rows)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = frozen_labeled_store(selection, packets, Path(temporary) / "pilot")
+            preflight = write_u7_preflight(store)
+            packet_id = next(packet_id for packet_id in selection.selected_packet_ids if packets[packet_id]["harness"] == "claude")
+            work_items = {item["packet_id"]: item for item in getattr(preflight, "work_items")}
+            release = provider_release(work_items[packet_id], harness="claude")
+            response = mock.Mock(
+                returncode=1,
+                stdout=json.dumps({"subtype": "error_max_budget_usd", "private": "do not persist"}),
+                stderr="also private",
+            )
+
+            with mock.patch("marketing_intelligence.quality_execution.subprocess.run", return_value=response):
+                with self.assertRaisesRegex(ValueError, "quality_claude_execution_failed"):
+                    execute_claude_packet(store, packet_id=packet_id, release=release)
+
+            attempts = (store.root / QUALITY_EXECUTION_DIRECTORY / "claude-checkpoints" / "attempts.jsonl").read_text(encoding="utf-8")
+            self.assertIn("claude_returncode_1_error_max_budget_usd", attempts)
+            self.assertNotIn("do not persist", attempts)
+            self.assertNotIn("also private", attempts)
 
 
 if __name__ == "__main__":

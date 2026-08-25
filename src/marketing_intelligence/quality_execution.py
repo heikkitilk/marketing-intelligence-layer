@@ -775,6 +775,10 @@ def _candidate_schema_for_claude() -> str:
         raise QualityPilotExecutionError("quality_execution_candidate_schema_invalid") from error
     if not isinstance(value, dict):
         raise QualityPilotExecutionError("quality_execution_candidate_schema_invalid")
+    # Claude CLI's structured-output validator does not register the draft
+    # 2020-12 meta-schema URI. The local validator still applies the canonical
+    # schema after receipt; only the transport annotation is omitted here.
+    value.pop("$schema", None)
     return canonical_json(value)
 
 
@@ -829,6 +833,25 @@ def _claude_response_document(stdout: str) -> dict[str, Any]:
     if not isinstance(candidate, Mapping):
         raise QualityPilotExecutionError("quality_claude_response_invalid")
     return dict(candidate)
+
+
+def _safe_claude_failure_code(stdout: str, returncode: int) -> str:
+    """Classify a Claude CLI failure from allow-listed envelope fields only."""
+
+    suffix = "unknown"
+    try:
+        response = json.loads(stdout)
+    except json.JSONDecodeError:
+        response = None
+    if isinstance(response, Mapping):
+        for field in ("subtype", "terminal_reason", "stop_reason"):
+            value = response.get(field)
+            if isinstance(value, str) and value:
+                normalized = re.sub(r"[^a-z0-9_]+", "_", value.casefold()).strip("_")
+                if normalized:
+                    suffix = normalized[:80]
+                    break
+    return f"claude_returncode_{returncode}_{suffix}"
 
 
 def execute_claude_packet(
@@ -891,7 +914,7 @@ def execute_claude_packet(
     if completed.returncode != 0:
         state = checkpoint_store.record_failure(
             str(work_item["work_item_id"]),
-            f"claude_returncode_{completed.returncode}",
+            _safe_claude_failure_code(completed.stdout, completed.returncode),
         )
         reason = "quality_claude_execution_terminal_failure" if state == "failed" else "quality_claude_execution_failed"
         raise QualityPilotExecutionError(reason)
