@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Full-corpus extraction batch result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "results"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "full-corpus-extraction-result/v1"},
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["work_item_id", "document"],
+        "properties": {
+          "work_item_id": {"type": "string", "pattern": "^work-[a-f0-9]{24}$"},
+          "document": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema_version", "result_type", "packet_id", "candidates", "no_learning_reason"],
+            "properties": {
+              "schema_version": {"type": "string", "const": "candidate-learning/v1"},
+              "result_type": {"type": "string", "enum": ["candidates", "no_learning"]},
+              "packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{24}$"},
+              "no_learning_reason": {"type": "string"},
+              "candidates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "candidate_id", "title", "summary", "recommended_action",
+                    "topic", "learning_type", "claim_label",
+                    "transferability_rationale", "confidence", "session_kind",
+                    "evidence_uris"
+                  ],
+                  "properties": {
+                    "candidate_id": {"type": "string"},
+                    "title": {"type": "string", "minLength": 1},
+                    "summary": {"type": "string", "minLength": 1},
+                    "recommended_action": {"type": "string", "minLength": 1},
+                    "topic": {"type": "string", "enum": [
+                      "demand_generation", "paid_advertising", "seo", "content_marketing",
+                      "attribution_measurement", "product_marketing", "activation_onboarding",
+                      "leadership_strategy", "ai_and_marketing_operations"
+                    ]},
+                    "learning_type": {"type": "string", "enum": ["metric", "finding", "formula", "win", "loss", "callout", "channel"]},
+                    "claim_label": {"type": "string", "enum": ["[DATA]", "[LOGIC]", "[HYPOTHESIS]"]},
+                    "transferability_rationale": {"type": "string", "minLength": 1},
+                    "confidence": {"type": "string", "enum": ["high", "medium", "low", "?"]},
+                    "session_kind": {"type": "string"},
+                    "evidence_uris": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

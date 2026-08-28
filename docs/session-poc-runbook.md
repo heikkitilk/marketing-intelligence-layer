@@ -5,8 +5,9 @@
 The automated U7 metrics are calibration diagnostics, not publication gates.
 The proof of concept now follows the upstream product's central interaction:
 show proposed learnings to a person before writing the intelligence layer.
-The historical U7 reduced-scope receipt remains unchanged, and unattended
-full-corpus extraction remains deferred.
+The historical U7 reduced-scope receipt remains unchanged. A separate,
+human-calibrated full-corpus continuation is available after the value-probe
+review is complete.
 
 Prepare a private, offline review page from the completed value-probe receipt.
 Use a fresh output root for every run; the command refuses to overwrite an
@@ -47,6 +48,58 @@ files use mode `0600`.
 Receipt hashes cover canonical JSON documents, not the serialized file bytes.
 The files include a trailing newline, and browser-exported decisions use
 indented JSON, so a raw file digest is expected to differ.
+
+## Human-calibrated full-corpus continuation
+
+Prepare a fresh private run from the frozen U3 preflight and the completed
+value-probe review. The preparation command verifies that the published layer
+recomputes from the queue and decision ledger before creating provider-affine
+classification batches:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus prepare \
+  --preflight-run <u3-preflight-run> \
+  --queue <review-root>/review-queue.json \
+  --decisions <review-decisions.json> \
+  --publication <publication-root>/accepted-intelligence.json \
+  --output-root .u8-private/full-corpus-<run-id>
+```
+
+Run each immutable classification batch with its declared harness. Completed
+batches are resumable and return `already_terminal` rather than calling the
+provider again:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus run-batch \
+  --output-root .u8-private/full-corpus-<run-id> \
+  --batch-id <batch-id>
+```
+
+After every classification batch is terminal, route the selected groups:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus route \
+  --output-root .u8-private/full-corpus-<run-id> \
+  --source-manifest <u1-root>/manifest.json \
+  --packet-manifest <u2-root>/packet-manifest.json \
+  --packet-root <u2-root>/packets
+```
+
+The route keeps 100% group-level classification coverage. It fully extracts
+one representative packet from every `marketing_bearing` or `mixed_work`
+dependence group and rolls that evidence-backed result up to repeated members.
+Run the generated extraction batches with the same `run-batch` command. Then
+create a new pending review queue:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus finalize \
+  --output-root .u8-private/full-corpus-<run-id> \
+  --review-output-root .u8-private/full-corpus-review-<run-id>
+```
+
+`finalize` fails closed unless every extraction work item has one valid
+terminal result. It never publishes proposals directly. Review and publish the
+new queue with the `review` commands above.
 
 ## U7 extraction-quality pilot
 

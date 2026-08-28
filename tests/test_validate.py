@@ -266,6 +266,46 @@ class RoutingTests(unittest.TestCase):
                 limits=ResourceLimits(max_input_tokens=1, max_calls=1, max_wall_minutes=1),
             )
 
+    def test_classified_mixed_work_is_selected_for_full_extraction(self):
+        record = artifact_record("a", session_kind="sdk")
+        packet = packet_for(record, value="a")
+        preflight = build_session_preflight(
+            {"records": [record]},
+            packet_manifest([packet]),
+            {str(packet["packet_id"]): packet},
+            prompt_sha256="prompt-a",
+            policy_version="policy-a",
+        )
+        group_id = preflight.groups[0].group_id
+
+        route = route_full_extraction_work(preflight, {group_id: "mixed_work"})
+
+        self.assertEqual(route.group_terminal_statuses[group_id], "extraction_pending")
+        self.assertEqual(len(route.extraction_work_items), 1)
+
+    def test_representative_only_rolls_one_packet_up_to_the_dependence_group(self):
+        first = artifact_record("a")
+        second = artifact_record("b")
+        packets = [packet_for(first, value="a"), packet_for(second, value="b")]
+        preflight = build_session_preflight(
+            {"records": [first, second]},
+            packet_manifest(packets),
+            {str(packet["packet_id"]): packet for packet in packets},
+            prompt_sha256="prompt-a",
+            policy_version="policy-a",
+        )
+        self.assertEqual(len(preflight.groups), 1)
+        group = preflight.groups[0]
+
+        route = route_full_extraction_work(
+            preflight,
+            {group.group_id: "marketing_bearing"},
+            representative_only=True,
+        )
+
+        self.assertEqual(len(route.extraction_work_items), 1)
+        self.assertEqual(route.extraction_work_items[0]["packet_id"], group.representative_packet_id)
+
 
 class CheckpointAndReleaseTests(unittest.TestCase):
     def test_immutable_work_items_and_repeated_failure_terminal_checkpoint(self):

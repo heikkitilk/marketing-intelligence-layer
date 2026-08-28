@@ -23,6 +23,14 @@ from .census import (
     write_census_private,
 )
 from .estimate import ResourceBudgetExceeded
+from .full_corpus import (
+    FullCorpusError,
+    finalize_full_corpus,
+    load_full_corpus_input,
+    prepare_full_corpus,
+    route_extraction,
+    run_batch,
+)
 from .normalize import normalize_census, write_normalization_private
 from .quality import PilotArtifactStore, QualityPilotError, select_reference_packets
 from .quality_execution import (
@@ -102,7 +110,10 @@ def _safe_reason(error: BaseException) -> str:
         "private_packet_file_unsafe",
     }
     message = str(error)
-    safe_prefixes = ("quality_", "codex_packets_", "claude_packets_", "review_", "publication_")
+    safe_prefixes = (
+        "quality_", "codex_packets_", "claude_packets_", "review_", "publication_",
+        "full_corpus_",
+    )
     return message if message in known or message.startswith(safe_prefixes) or message == "reviewer_required" else "census_command_failed"
 
 
@@ -753,6 +764,71 @@ def _review_publish_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _full_corpus_prepare_command(arguments: argparse.Namespace) -> int:
+    try:
+        queue = load_private_json_input(input_file=arguments.queue)
+        decisions = load_private_json_input(input_file=arguments.decisions)
+        publication = load_private_json_input(input_file=arguments.publication)
+        receipt = prepare_full_corpus(
+            arguments.preflight_run,
+            queue,
+            decisions,
+            publication,
+            arguments.output_root,
+        )
+    except (OSError, ValueError, json.JSONDecodeError, HumanReviewError, FullCorpusError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error), "provider_dispatch": "not_started"}))
+        return 2
+    print(canonical_json({**receipt, "provider_dispatch": "ready_human_calibrated"}))
+    return 0
+
+
+def _full_corpus_run_batch_command(arguments: argparse.Namespace) -> int:
+    try:
+        result = run_batch(
+            arguments.output_root,
+            arguments.batch_id,
+            claude_model=arguments.claude_model,
+            codex_model=arguments.codex_model,
+            effort=arguments.effort,
+            max_budget_usd=arguments.max_budget_usd,
+            timeout_seconds=arguments.timeout_seconds,
+        )
+    except (OSError, ValueError, json.JSONDecodeError, FullCorpusError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error), "provider_dispatch": "not_started_or_failed"}))
+        return 2
+    print(canonical_json({**result, "provider_dispatch": "completed_first_party_provider"}))
+    return 0
+
+
+def _full_corpus_route_command(arguments: argparse.Namespace) -> int:
+    try:
+        source_manifest = load_full_corpus_input(arguments.source_manifest)
+        packet_manifest = load_full_corpus_input(arguments.packet_manifest)
+        result = route_extraction(
+            arguments.output_root,
+            source_manifest,
+            packet_manifest,
+            arguments.packet_root,
+            mixed_sample_fraction=arguments.mixed_sample_fraction,
+        )
+    except (OSError, ValueError, json.JSONDecodeError, FullCorpusError, ResourceBudgetExceeded) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error), "provider_dispatch": "not_started"}))
+        return 2
+    print(canonical_json({**result, "provider_dispatch": "ready_human_calibrated"}))
+    return 0
+
+
+def _full_corpus_finalize_command(arguments: argparse.Namespace) -> int:
+    try:
+        result = finalize_full_corpus(arguments.output_root, arguments.review_output_root)
+    except (OSError, ValueError, json.JSONDecodeError, HumanReviewError, FullCorpusError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error), "publication": "not_created"}))
+        return 2
+    print(canonical_json({**result, "publication": "not_created"}))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run a no-egress census with explicitly configured local roots."""
 
@@ -821,6 +897,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     review_publish.add_argument("--queue", type=Path, required=True, help="mode-0600 private review-queue JSON")
     review_publish.add_argument("--decisions", type=Path, required=True, help="mode-0600 exported human decisions JSON")
     review_publish.add_argument("--output-root", type=Path, required=True, help="ignored private accepted-intelligence output root")
+    full_corpus = subcommands.add_parser("full-corpus", help="run human-calibrated full-corpus extraction")
+    full_corpus_commands = full_corpus.add_subparsers(dest="full_corpus_command", required=True)
+    full_corpus_prepare = full_corpus_commands.add_parser("prepare", help="bind human calibration and create classification batches")
+    full_corpus_prepare.add_argument("--preflight-run", type=Path, required=True, help="existing private U3 preflight run directory")
+    full_corpus_prepare.add_argument("--queue", type=Path, required=True, help="private reviewed value-probe queue")
+    full_corpus_prepare.add_argument("--decisions", type=Path, required=True, help="private complete human decision ledger")
+    full_corpus_prepare.add_argument("--publication", type=Path, required=True, help="private accepted value-probe intelligence")
+    full_corpus_prepare.add_argument("--output-root", type=Path, required=True, help="fresh ignored private full-corpus root")
+    full_corpus_run = full_corpus_commands.add_parser("run-batch", help="run one provider-affine classification or extraction batch")
+    full_corpus_run.add_argument("--output-root", type=Path, required=True, help="existing ignored private full-corpus root")
+    full_corpus_run.add_argument("--batch-id", required=True, help="immutable batch identifier")
+    full_corpus_run.add_argument("--claude-model", default="claude-sonnet-5")
+    full_corpus_run.add_argument("--codex-model", default="gpt-5.6-luna")
+    full_corpus_run.add_argument("--effort", choices=("low", "medium", "high", "xhigh", "max"), default="high")
+    full_corpus_run.add_argument("--max-budget-usd", type=float, default=8.0)
+    full_corpus_run.add_argument("--timeout-seconds", type=int, default=1200)
+    full_corpus_route = full_corpus_commands.add_parser("route", help="route classified groups into extraction batches")
+    full_corpus_route.add_argument("--output-root", type=Path, required=True)
+    full_corpus_route.add_argument("--source-manifest", type=Path, required=True)
+    full_corpus_route.add_argument("--packet-manifest", type=Path, required=True)
+    full_corpus_route.add_argument("--packet-root", type=Path, required=True)
+    full_corpus_route.add_argument("--mixed-sample-fraction", type=float, default=0.05)
+    full_corpus_finalize = full_corpus_commands.add_parser("finalize", help="create a pending review queue after complete extraction")
+    full_corpus_finalize.add_argument("--output-root", type=Path, required=True)
+    full_corpus_finalize.add_argument("--review-output-root", type=Path, required=True)
     arguments = parser.parse_args(argv)
     if arguments.command == "census":
         return _census_command(arguments)
@@ -846,6 +947,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _review_prepare_command(arguments)
     if arguments.command == "review" and arguments.review_command == "publish":
         return _review_publish_command(arguments)
+    if arguments.command == "full-corpus" and arguments.full_corpus_command == "prepare":
+        return _full_corpus_prepare_command(arguments)
+    if arguments.command == "full-corpus" and arguments.full_corpus_command == "run-batch":
+        return _full_corpus_run_batch_command(arguments)
+    if arguments.command == "full-corpus" and arguments.full_corpus_command == "route":
+        return _full_corpus_route_command(arguments)
+    if arguments.command == "full-corpus" and arguments.full_corpus_command == "finalize":
+        return _full_corpus_finalize_command(arguments)
     parser.error("unknown command")
     return 2
 

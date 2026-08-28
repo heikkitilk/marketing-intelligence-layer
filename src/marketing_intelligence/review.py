@@ -194,6 +194,104 @@ def build_review_queue(value_probe_envelope: Mapping[str, Any]) -> dict[str, Any
     return queue
 
 
+def build_extraction_review_queue(
+    candidate_rows: Sequence[Mapping[str, Any]],
+    *,
+    source_sha256: str,
+    source_payload_sha256: str,
+    machine_rejected_count: int = 0,
+) -> dict[str, Any]:
+    """Turn validated full-corpus candidates into pending human proposals."""
+
+    for value in (source_sha256, source_payload_sha256):
+        if re.fullmatch(r"[a-f0-9]{64}", value) is None:
+            raise HumanReviewError("review_extraction_source_hash_invalid")
+    if (
+        not isinstance(machine_rejected_count, int)
+        or isinstance(machine_rejected_count, bool)
+        or machine_rejected_count < 0
+    ):
+        raise HumanReviewError("review_extraction_rejected_count_invalid")
+
+    by_identity: dict[str, dict[str, Any]] = {}
+    evidence_by_identity: dict[str, set[str]] = {}
+    source_ids_by_identity: dict[str, set[str]] = {}
+    for source in candidate_rows:
+        if not isinstance(source, Mapping):
+            raise HumanReviewError("review_extraction_candidate_invalid")
+        source_candidate_id = _nonempty(
+            source.get("candidate_id"),
+            "review_extraction_candidate_id_invalid",
+        )
+        evidence = source.get("evidence_uris")
+        if (
+            not isinstance(evidence, Sequence)
+            or isinstance(evidence, (str, bytes))
+            or not evidence
+            or any(
+                not isinstance(uri, str) or _EVIDENCE_PATTERN.fullmatch(uri) is None
+                for uri in evidence
+            )
+        ):
+            raise HumanReviewError("review_extraction_evidence_invalid")
+        topic = source.get("topic")
+        learning_type = source.get("learning_type")
+        claim_label = source.get("claim_label")
+        if topic not in TOPICS or learning_type not in LEARNING_TYPES:
+            raise HumanReviewError("review_extraction_classification_invalid")
+        if claim_label not in CLAIM_LABELS:
+            raise HumanReviewError("review_extraction_claim_label_invalid")
+        candidate: dict[str, Any] = {
+            "title": _nonempty(source.get("title"), "review_extraction_title_invalid"),
+            "content": _nonempty(source.get("summary"), "review_extraction_content_invalid"),
+            "action": _nonempty(
+                source.get("recommended_action"),
+                "review_extraction_action_invalid",
+            ),
+            "topic": topic,
+            "learning_type": learning_type,
+            "claim_label": claim_label,
+            "source_topic": str(topic),
+            "source_type": str(learning_type),
+            "evidence_uris": sorted(set(str(uri) for uri in evidence)),
+            "source_candidate_ids": [source_candidate_id],
+            "review_status": "pending",
+        }
+        identity = f"candidate-{_candidate_identity(candidate)[:24]}"
+        candidate["candidate_id"] = identity
+        existing = by_identity.get(identity)
+        if existing is None:
+            by_identity[identity] = candidate
+            evidence_by_identity[identity] = set(candidate["evidence_uris"])
+            source_ids_by_identity[identity] = {source_candidate_id}
+        else:
+            evidence_by_identity[identity].update(candidate["evidence_uris"])
+            source_ids_by_identity[identity].add(source_candidate_id)
+
+    for identity, candidate in by_identity.items():
+        candidate["evidence_uris"] = sorted(evidence_by_identity[identity])
+        candidate["source_candidate_ids"] = sorted(source_ids_by_identity[identity])
+        candidate["support_count"] = len(
+            {uri.split("@", 1)[0] for uri in candidate["evidence_uris"]}
+        )
+
+    candidates = sorted(by_identity.values(), key=lambda row: str(row["candidate_id"]))
+    queue_core: dict[str, Any] = {
+        "schema_version": QUEUE_SCHEMA_VERSION,
+        "source_kind": "full-corpus-extraction",
+        "source_sha256": source_sha256,
+        "source_payload_sha256": source_payload_sha256,
+        "machine_qualified_count": len(candidate_rows),
+        "machine_rejected_count": machine_rejected_count,
+        "review_candidate_count": len(candidates),
+        "exact_duplicates_collapsed": len(candidate_rows) - len(candidates),
+        "candidates": candidates,
+    }
+    queue = {**queue_core, "queue_sha256": _sha256(queue_core)}
+    _validate_schema(queue, "human-review-queue.schema.json", "review_queue_schema_invalid")
+    return queue
+
+
 def _validated_queue(queue: Mapping[str, Any]) -> tuple[str, dict[str, Mapping[str, Any]]]:
     if queue.get("schema_version") != QUEUE_SCHEMA_VERSION:
         raise HumanReviewError("review_queue_schema_invalid")

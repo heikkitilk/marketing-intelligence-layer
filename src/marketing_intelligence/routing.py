@@ -613,6 +613,7 @@ def route_full_extraction_work(
     classifications: Mapping[str, object],
     *,
     mixed_sample_fraction: float = 0.05,
+    representative_only: bool = False,
     limits: ResourceLimits = FULL_POC_LIMITS,
 ) -> FullExtractionRoute:
     """Route only positive groups plus a deterministic negative mixed sample."""
@@ -623,7 +624,11 @@ def route_full_extraction_work(
     if set(classifications) != known_group_ids:
         raise ValueError("classification_coverage_incomplete")
     labels = {group_id: _classification_label(value) for group_id, value in classifications.items()}
-    positives = {group_id for group_id, label in labels.items() if label == "marketing_bearing"}
+    positives = {
+        group_id
+        for group_id, label in labels.items()
+        if label in {"marketing_bearing", "mixed_work"}
+    }
     negative_mixed = [
         group.group_id
         for group in preflight.groups
@@ -645,7 +650,8 @@ def route_full_extraction_work(
             continue
         terminal_statuses[group.group_id] = "extraction_pending"
         reason = "marketing_bearing" if group.group_id in positives else "mixed_negative_sample"
-        for packet_id in group.packet_ids:
+        packet_ids = (group.representative_packet_id,) if representative_only else group.packet_ids
+        for packet_id in packet_ids:
             packet = preflight.packet_documents.get(packet_id)
             if not isinstance(packet, Mapping):
                 raise ValueError("preflight_packet_document_missing")

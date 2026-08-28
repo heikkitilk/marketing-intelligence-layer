@@ -44,6 +44,8 @@
           },
           "claim_label": {"type": "string", "enum": ["[DATA]", "[LOGIC]", "[HYPOTHESIS]"]},
           "summary": {"type": "string"},
+          "title": {"type": "string", "minLength": 1},
+          "recommended_action": {"type": "string", "minLength": 1},
           "transferability_rationale": {"type": "string"},
           "confidence": {"type": "string", "enum": ["high", "medium", "low", "?"]},
           "session_kind": {"type": "string"},
