@@ -560,7 +560,13 @@ def _validate_exact_result_coverage(batch: Mapping[str, Any], result: Mapping[st
     return by_id
 
 
-def _normalize_extraction_result(batch: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_extraction_result(
+    batch: Mapping[str, Any],
+    result: Mapping[str, Any],
+    *,
+    provider: str,
+    provider_override_reason: str | None,
+) -> dict[str, Any]:
     by_id = _validate_exact_result_coverage(batch, result)
     item_by_id = {str(row["work_item_id"]): row for row in batch["work_items"]}
     terminal_results: list[dict[str, Any]] = []
@@ -606,6 +612,8 @@ def _normalize_extraction_result(batch: Mapping[str, Any], result: Mapping[str, 
         "batch_id": batch["batch_id"],
         "stage": "full_extraction",
         "harness": batch["harness"],
+        "provider": provider,
+        "provider_override_reason": provider_override_reason or "not_applicable",
         "terminal_results": terminal_results,
     }
     return {**core, "result_sha256": _sha256(core)}
@@ -620,6 +628,8 @@ def run_batch(
     effort: str = "high",
     max_budget_usd: float = 8.0,
     timeout_seconds: int = 1_200,
+    provider_override: str | None = None,
+    provider_override_reason: str | None = None,
     provider_runner: ProviderRunner | None = None,
 ) -> dict[str, Any]:
     """Run one provider-affine batch and persist only validated private output."""
@@ -632,12 +642,26 @@ def run_batch(
             "status": "already_terminal",
             "stage": stage,
             "batch_id": batch_id,
+            "source_harness": result.get("harness"),
+            "provider": result.get("provider", result.get("harness")),
             "result_sha256": result.get("result_sha256"),
         }
     batch = _private_json(batch_path)
     calibration = _private_json(root / "calibration.json")
     prompt_calibration = _stage_calibration(calibration, stage)
     harness = str(batch.get("harness"))
+    if provider_override is not None and provider_override not in {"claude", "codex"}:
+        raise FullCorpusError("full_corpus_provider_override_invalid")
+    if provider_override is not None:
+        if provider_override == harness or not isinstance(provider_override_reason, str) or not provider_override_reason.strip():
+            raise FullCorpusError("full_corpus_provider_override_reason_required")
+        provider = provider_override
+        override_reason = provider_override_reason.strip()[:200]
+    else:
+        if provider_override_reason is not None:
+            raise FullCorpusError("full_corpus_provider_override_invalid")
+        provider = harness
+        override_reason = None
     prompt_path = _CLASSIFICATION_PROMPT if stage == "classification" else _EXTRACTION_PROMPT
     schema_path = _CLASSIFICATION_SCHEMA if stage == "classification" else _EXTRACTION_SCHEMA
     prompt = (
@@ -648,8 +672,8 @@ def run_batch(
         + canonical_json(batch)
     )
     runner = provider_runner or _run_provider
-    model = claude_model if harness == "claude" else codex_model
-    result = dict(runner(harness, prompt, schema_path, root, model, effort, max_budget_usd, timeout_seconds))
+    model = claude_model if provider == "claude" else codex_model
+    result = dict(runner(provider, prompt, schema_path, root, model, effort, max_budget_usd, timeout_seconds))
     schema_errors = validate_schema_document(result, schema_path)
     if schema_errors:
         raise FullCorpusError("full_corpus_provider_result_schema_invalid")
@@ -666,17 +690,26 @@ def run_batch(
             "batch_id": batch_id,
             "stage": stage,
             "harness": harness,
+            "provider": provider,
+            "provider_override_reason": override_reason or "not_applicable",
             "terminal_results": [dict(by_id[key]) for key in sorted(by_id)],
         }
         terminal = {**core, "result_sha256": _sha256(core)}
     else:
-        terminal = _normalize_extraction_result(batch, result)
+        terminal = _normalize_extraction_result(
+            batch,
+            result,
+            provider=provider,
+            provider_override_reason=override_reason,
+        )
     _write_once(result_path, terminal, "full_corpus_result_mismatch")
     return {
         "status": "terminal",
         "stage": stage,
         "batch_id": batch_id,
-        "harness": harness,
+        "source_harness": harness,
+        "provider": provider,
+        "provider_override_reason": override_reason or "not_applicable",
         "model_requested": model,
         "model_actual": "unverified",
         "work_item_count": len(terminal["terminal_results"]),
@@ -886,6 +919,7 @@ def finalize_full_corpus(output_root: Path, review_output_root: Path) -> dict[st
 
     candidates: list[dict[str, Any]] = []
     status_counts: dict[str, int] = {}
+    provider_counts: dict[str, int] = {}
     for row in terminal_rows:
         status = str(row.get("terminal_status"))
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -894,6 +928,10 @@ def finalize_full_corpus(output_root: Path, review_output_root: Path) -> dict[st
             candidate_rows = document.get("candidates")
             if isinstance(candidate_rows, list):
                 candidates.extend(dict(candidate) for candidate in candidate_rows if isinstance(candidate, Mapping))
+    for batch_id in sorted(expected_batches):
+        result = _private_json(result_root / f"{batch_id}.json")
+        provider = str(result.get("provider", result.get("harness", "unknown")))
+        provider_counts[provider] = provider_counts.get(provider, 0) + 1
     source_core = {
         "schema_version": "full-corpus-terminal-result/v1",
         "classification_plan_sha256": classification_plan["plan_sha256"],
@@ -903,6 +941,7 @@ def finalize_full_corpus(output_root: Path, review_output_root: Path) -> dict[st
         "rolled_up_group_count": extraction_plan["rolled_up_group_count"],
         "extraction_work_item_count": expected_work_items,
         "terminal_status_counts": dict(sorted(status_counts.items())),
+        "provider_batch_counts": dict(sorted(provider_counts.items())),
         "candidate_count": len(candidates),
         "terminal_batch_result_sha256s": [
             _private_json(result_root / f"{batch_id}.json")["result_sha256"]
@@ -926,11 +965,12 @@ def finalize_full_corpus(output_root: Path, review_output_root: Path) -> dict[st
         "rolled_up_group_count": source_document["rolled_up_group_count"],
         "extraction_work_item_count": source_document["extraction_work_item_count"],
         "terminal_status_counts": source_document["terminal_status_counts"],
+        "provider_batch_counts": source_document["provider_batch_counts"],
         "candidate_count": source_document["candidate_count"],
         "review_queue_sha256": queue["queue_sha256"],
         "review_candidate_count": queue["review_candidate_count"],
         "exact_duplicates_collapsed": queue["exact_duplicates_collapsed"],
-        "review_output_root": str(Path(review_output_root).relative_to(_REPOSITORY_ROOT)),
+        "review_output_root": str(review_paths["review.html"].parent.relative_to(_REPOSITORY_ROOT)),
     }
     _write_once(root / "terminal-result.json", source_document, "full_corpus_terminal_result_mismatch")
     _write_once(root / "finalize-receipt.json", final_receipt, "full_corpus_finalize_receipt_mismatch")
@@ -941,6 +981,7 @@ def finalize_full_corpus(output_root: Path, review_output_root: Path) -> dict[st
         "rolled_up_group_count": extraction_plan["rolled_up_group_count"],
         "extraction_work_item_count": expected_work_items,
         "terminal_status_counts": dict(sorted(status_counts.items())),
+        "provider_batch_counts": dict(sorted(provider_counts.items())),
         "candidate_count": len(candidates),
         "review_candidate_count": queue["review_candidate_count"],
         "review_queue_sha256": queue["queue_sha256"],

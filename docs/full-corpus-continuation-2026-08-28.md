@@ -13,6 +13,11 @@ August 17-24 corpus. It routes every `marketing_bearing` and `mixed_work` group
 to extraction, uses the originating harness provider, and retains private,
 owner-only inputs and outputs.
 
+[DATA] On August 29, 2026, an active user override selected Codex because Claude
+was unavailable. The final 3 extraction batches retain `claude` as their source
+harness and record `codex` as the actual provider; the earlier 27 terminal
+batches remain unchanged.
+
 [LOGIC] Repetition classes need one model extraction per dependence group, not
 one extraction per near-identical session. The representative packet supplies
 the group result while the classification and terminal-status ledgers account

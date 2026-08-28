@@ -88,8 +88,10 @@ or human-edited proposals can enter the generated intelligence layer.
 See [`docs/session-poc-runbook.md`](docs/session-poc-runbook.md) for the review
 and publication commands. The full-corpus continuation keeps the historical U7
 diagnostic intact, calibrates on reviewed decisions, classifies every dependence
-group, extracts one representative packet from each selected group with its
-original provider, and stops at a fresh human-review queue.
+group, extracts one representative packet from each selected group, records
+the actual provider separately from the source harness, and stops at a fresh
+human-review queue. Reviewed publications can then be consolidated into one
+cumulative intelligence layer.
 
 ---
 

@@ -260,15 +260,37 @@ class FullCorpusPipelineTest(unittest.TestCase):
         self.assertEqual(routed["rolled_up_group_count"], 0)
         self.assertEqual(routed["extraction_batch_count"], 2)
         for batch_path in sorted((run_root / "extraction" / "batches").glob("*.json")):
-            run_batch(run_root, batch_path.stem, provider_runner=fake_provider)
+            batch = json.loads(batch_path.read_text(encoding="utf-8"))
+            if batch["harness"] == "claude":
+                result = run_batch(
+                    run_root,
+                    batch_path.stem,
+                    provider_override="codex",
+                    provider_override_reason="active_user_override_claude_unavailable",
+                    provider_runner=fake_provider,
+                )
+                self.assertEqual(result["source_harness"], "claude")
+                self.assertEqual(result["provider"], "codex")
+                terminal = json.loads(
+                    (run_root / "extraction" / "results" / batch_path.name).read_text(encoding="utf-8")
+                )
+                self.assertEqual(terminal["harness"], "claude")
+                self.assertEqual(terminal["provider"], "codex")
+                self.assertEqual(
+                    terminal["provider_override_reason"],
+                    "active_user_override_claude_unavailable",
+                )
+            else:
+                run_batch(run_root, batch_path.stem, provider_runner=fake_provider)
 
         review_root = self.temporary / "review"
-        finalized = finalize_full_corpus(run_root, review_root)
+        finalized = finalize_full_corpus(run_root, review_root.relative_to(ROOT))
 
         self.assertEqual(finalized["status"], "blocked_pending_human_review")
         self.assertEqual(finalized["classified_group_count"], 2)
         self.assertEqual(finalized["terminal_status_counts"], {"extracted": 2})
-        self.assertEqual(finalized["review_candidate_count"], 2)
+        self.assertEqual(finalized["provider_batch_counts"], {"codex": 2})
+        self.assertEqual(finalized["review_candidate_count"], 1)
         self.assertTrue((review_root / "review.html").is_file())
         self.assertFalse((review_root / "index.html").exists())
 

@@ -75,6 +75,21 @@ PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus run-batch \
   --batch-id <batch-id>
 ```
 
+If the declared provider is unavailable and an active user instruction selects
+another provider, record the exception rather than relabeling the source
+harness. For example, to run a Claude-origin batch through Codex:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus run-batch \
+  --output-root .u8-private/full-corpus-<run-id> \
+  --batch-id <batch-id> \
+  --provider-override codex \
+  --provider-override-reason active_user_override_claude_unavailable
+```
+
+The terminal receipt retains `source_harness: claude`, records
+`provider: codex`, and binds the override reason into its result hash.
+
 After every classification batch is terminal, route the selected groups:
 
 ```sh
@@ -100,6 +115,20 @@ PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus finalize \
 `finalize` fails closed unless every extraction work item has one valid
 terminal result. It never publishes proposals directly. Review and publish the
 new queue with the `review` commands above.
+
+To retain earlier accepted intelligence, consolidate reviewed publications
+after publishing the new queue:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli review consolidate \
+  --publication <previous-publication>/accepted-intelligence.json \
+  --publication <new-publication>/accepted-intelligence.json \
+  --output-root .u8-private/consolidated-intelligence-<run-id>
+```
+
+Consolidation validates every input publication hash, exact-deduplicates the
+accepted learnings, and writes one cumulative searchable page. It cannot add an
+unreviewed proposal.
 
 ## U7 extraction-quality pilot
 

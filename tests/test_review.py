@@ -12,6 +12,7 @@ from marketing_intelligence.census import canonical_json, validate_schema_docume
 from marketing_intelligence.cli import _safe_reason
 from marketing_intelligence.review import (
     HumanReviewError,
+    build_consolidated_publication,
     build_publication,
     build_review_queue,
     render_published_html,
@@ -59,6 +60,32 @@ def probe_receipt(*decisions: dict[str, object]) -> dict[str, object]:
 
 
 class HumanReviewTest(unittest.TestCase):
+    def test_consolidation_keeps_reviewed_learnings_and_collapses_exact_duplicates(self) -> None:
+        publications = []
+        for ordinal, harness in enumerate(("claude", "codex"), start=1):
+            candidate = probe_candidate(
+                f"source-{ordinal}",
+                title="Retained reviewed learning",
+                content="A reviewed marketing result remains useful in the cumulative layer.",
+                evidence=f"session://{harness}/session-{ordinal}@" + str(ordinal) * 64 + f"#event=e-{ordinal}",
+            )
+            queue = build_review_queue(probe_receipt(candidate))
+            decisions = {
+                "schema_version": "human-review-decisions/v1",
+                "queue_sha256": queue["queue_sha256"],
+                "reviewer": f"Reviewer {ordinal}",
+                "decisions": [{"candidate_id": queue["candidates"][0]["candidate_id"], "decision": "accept"}],
+            }
+            publications.append(build_publication(queue, decisions))
+
+        consolidated = build_consolidated_publication(publications)
+
+        self.assertEqual(consolidated["schema_version"], "accepted-intelligence/v1")
+        self.assertEqual(consolidated["decision_counts"], {"accept": 1, "edit": 0, "reject": 0})
+        self.assertEqual(len(consolidated["learnings"]), 1)
+        self.assertEqual(len(consolidated["learnings"][0]["evidence_uris"]), 2)
+        self.assertEqual(consolidated["learnings"][0]["support_count"], 2)
+
     def test_queue_is_deterministic_and_exact_duplicates_retain_all_support(self) -> None:
         first = probe_candidate(
             "c1",

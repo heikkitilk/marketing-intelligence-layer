@@ -45,6 +45,7 @@ from .quality_execution import (
     write_quality_pilot_preflight,
 )
 from .review import (
+    build_consolidated_publication,
     HumanReviewError,
     build_publication,
     build_review_queue,
@@ -764,6 +765,27 @@ def _review_publish_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _review_consolidate_command(arguments: argparse.Namespace) -> int:
+    """Create one cumulative layer from already reviewed publications."""
+
+    try:
+        publications = [load_private_json_input(input_file=path) for path in arguments.publications]
+        publication = build_consolidated_publication(publications, reviewer=arguments.reviewer)
+        paths = write_publication_artifacts(publication, arguments.output_root)
+    except (OSError, ValueError, json.JSONDecodeError, HumanReviewError, QualityPilotExecutionError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error)}))
+        return 2
+    print(canonical_json({
+        "status": "published_consolidated_intelligence",
+        "source_publication_count": len(publications),
+        "accepted_learning_count": len(publication["learnings"]),
+        "publication_sha256": publication["publication_sha256"],
+        "index_page": str(paths["index.html"].relative_to(_REPOSITORY_ROOT)),
+        "mode": "private_offline_publication",
+    }))
+    return 0
+
+
 def _full_corpus_prepare_command(arguments: argparse.Namespace) -> int:
     try:
         queue = load_private_json_input(input_file=arguments.queue)
@@ -793,6 +815,8 @@ def _full_corpus_run_batch_command(arguments: argparse.Namespace) -> int:
             effort=arguments.effort,
             max_budget_usd=arguments.max_budget_usd,
             timeout_seconds=arguments.timeout_seconds,
+            provider_override=arguments.provider_override,
+            provider_override_reason=arguments.provider_override_reason,
         )
     except (OSError, ValueError, json.JSONDecodeError, FullCorpusError) as error:
         print(canonical_json({"status": "failed", "reason": _safe_reason(error), "provider_dispatch": "not_started_or_failed"}))
@@ -897,6 +921,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     review_publish.add_argument("--queue", type=Path, required=True, help="mode-0600 private review-queue JSON")
     review_publish.add_argument("--decisions", type=Path, required=True, help="mode-0600 exported human decisions JSON")
     review_publish.add_argument("--output-root", type=Path, required=True, help="ignored private accepted-intelligence output root")
+    review_consolidate = review_commands.add_parser("consolidate", help="combine already reviewed publications")
+    review_consolidate.add_argument("--publication", dest="publications", action="append", type=Path, required=True)
+    review_consolidate.add_argument("--reviewer", default="Consolidated previously reviewed intelligence")
+    review_consolidate.add_argument("--output-root", type=Path, required=True)
     full_corpus = subcommands.add_parser("full-corpus", help="run human-calibrated full-corpus extraction")
     full_corpus_commands = full_corpus.add_subparsers(dest="full_corpus_command", required=True)
     full_corpus_prepare = full_corpus_commands.add_parser("prepare", help="bind human calibration and create classification batches")
@@ -913,6 +941,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     full_corpus_run.add_argument("--effort", choices=("low", "medium", "high", "xhigh", "max"), default="high")
     full_corpus_run.add_argument("--max-budget-usd", type=float, default=8.0)
     full_corpus_run.add_argument("--timeout-seconds", type=int, default=1200)
+    full_corpus_run.add_argument("--provider-override", choices=("claude", "codex"))
+    full_corpus_run.add_argument("--provider-override-reason")
     full_corpus_route = full_corpus_commands.add_parser("route", help="route classified groups into extraction batches")
     full_corpus_route.add_argument("--output-root", type=Path, required=True)
     full_corpus_route.add_argument("--source-manifest", type=Path, required=True)
@@ -947,6 +977,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _review_prepare_command(arguments)
     if arguments.command == "review" and arguments.review_command == "publish":
         return _review_publish_command(arguments)
+    if arguments.command == "review" and arguments.review_command == "consolidate":
+        return _review_consolidate_command(arguments)
     if arguments.command == "full-corpus" and arguments.full_corpus_command == "prepare":
         return _full_corpus_prepare_command(arguments)
     if arguments.command == "full-corpus" and arguments.full_corpus_command == "run-batch":

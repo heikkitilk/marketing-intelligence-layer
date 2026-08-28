@@ -200,6 +200,7 @@ def build_extraction_review_queue(
     source_sha256: str,
     source_payload_sha256: str,
     machine_rejected_count: int = 0,
+    source_kind: str = "full-corpus-extraction",
 ) -> dict[str, Any]:
     """Turn validated full-corpus candidates into pending human proposals."""
 
@@ -212,6 +213,8 @@ def build_extraction_review_queue(
         or machine_rejected_count < 0
     ):
         raise HumanReviewError("review_extraction_rejected_count_invalid")
+    if source_kind not in {"full-corpus-extraction", "reviewed-publication-consolidation"}:
+        raise HumanReviewError("review_extraction_source_kind_invalid")
 
     by_identity: dict[str, dict[str, Any]] = {}
     evidence_by_identity: dict[str, set[str]] = {}
@@ -278,7 +281,7 @@ def build_extraction_review_queue(
     candidates = sorted(by_identity.values(), key=lambda row: str(row["candidate_id"]))
     queue_core: dict[str, Any] = {
         "schema_version": QUEUE_SCHEMA_VERSION,
-        "source_kind": "full-corpus-extraction",
+        "source_kind": source_kind,
         "source_sha256": source_sha256,
         "source_payload_sha256": source_payload_sha256,
         "machine_qualified_count": len(candidate_rows),
@@ -290,6 +293,62 @@ def build_extraction_review_queue(
     queue = {**queue_core, "queue_sha256": _sha256(queue_core)}
     _validate_schema(queue, "human-review-queue.schema.json", "review_queue_schema_invalid")
     return queue
+
+
+def build_consolidated_publication(
+    publications: Sequence[Mapping[str, Any]],
+    *,
+    reviewer: str = "Consolidated previously reviewed intelligence",
+) -> dict[str, Any]:
+    """Combine already reviewed publications through the existing exact identity."""
+
+    if len(publications) < 2:
+        raise HumanReviewError("publication_consolidation_requires_multiple_inputs")
+    hashes: list[str] = []
+    candidate_rows: list[dict[str, Any]] = []
+    for publication in publications:
+        _validate_schema(
+            publication,
+            "accepted-intelligence.schema.json",
+            "publication_schema_invalid",
+        )
+        publication_sha256 = publication.get("publication_sha256")
+        unsigned = {key: value for key, value in publication.items() if key != "publication_sha256"}
+        if not isinstance(publication_sha256, str) or _sha256(unsigned) != publication_sha256:
+            raise HumanReviewError("publication_hash_mismatch")
+        hashes.append(publication_sha256)
+        for learning in publication.get("learnings", ()):
+            if not isinstance(learning, Mapping):
+                raise HumanReviewError("publication_learning_invalid")
+            candidate_rows.append({
+                "candidate_id": str(learning["learning_id"]),
+                "title": learning["title"],
+                "summary": learning["content"],
+                "recommended_action": learning["action"],
+                "topic": learning["topic"],
+                "learning_type": learning["learning_type"],
+                "claim_label": learning["claim_label"],
+                "evidence_uris": learning["evidence_uris"],
+            })
+    source_sha256 = _sha256({"publication_sha256s": sorted(hashes)})
+    queue = build_extraction_review_queue(
+        candidate_rows,
+        source_sha256=source_sha256,
+        source_payload_sha256=_sha256({
+            "publications": [dict(publication) for publication in publications],
+        }),
+        source_kind="reviewed-publication-consolidation",
+    )
+    decisions = {
+        "schema_version": DECISIONS_SCHEMA_VERSION,
+        "queue_sha256": queue["queue_sha256"],
+        "reviewer": _nonempty(reviewer, "reviewer_required"),
+        "decisions": [
+            {"candidate_id": row["candidate_id"], "decision": "accept"}
+            for row in queue["candidates"]
+        ],
+    }
+    return build_publication(queue, decisions)
 
 
 def _validated_queue(queue: Mapping[str, Any]) -> tuple[str, dict[str, Mapping[str, Any]]]:
