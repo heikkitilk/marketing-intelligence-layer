@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
 
-from .census import _REPOSITORY_ROOT, _private_root, canonical_json
+from .census import _REPOSITORY_ROOT, _private_root, canonical_json, validate_schema_document
 from .extraction import CLAIM_LABELS, LEARNING_TYPES, TOPICS
 from .redact import secure_write_text
 
@@ -23,6 +23,7 @@ _EDITABLE_FIELDS = frozenset({"title", "content", "action", "topic", "learning_t
 _EVIDENCE_PATTERN = re.compile(
     r"^session://(?:codex|claude)/[^@\s]+@[a-f0-9]{64}#event=[^\s]+$"
 )
+_SCHEMA_ROOT = _REPOSITORY_ROOT / "schemas"
 
 
 class HumanReviewError(ValueError):
@@ -31,6 +32,11 @@ class HumanReviewError(ValueError):
 
 def _sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(dict(value)).encode("utf-8")).hexdigest()
+
+
+def _validate_schema(document: Mapping[str, Any], filename: str, error: str) -> None:
+    if validate_schema_document(document, _SCHEMA_ROOT / filename):
+        raise HumanReviewError(error)
 
 
 def _nonempty(value: object, error: str) -> str:
@@ -166,7 +172,7 @@ def build_review_queue(value_probe_envelope: Mapping[str, Any]) -> dict[str, Any
     for identity, candidate in by_identity.items():
         candidate["evidence_uris"] = sorted(evidence_by_identity[identity])
         candidate["source_candidate_ids"] = sorted(source_ids_by_identity[identity])
-        candidate["support_count"] = len(candidate["source_candidate_ids"])
+        candidate["support_count"] = len({uri.split("@", 1)[0] for uri in candidate["evidence_uris"]})
 
     candidates = sorted(by_identity.values(), key=lambda row: str(row["candidate_id"]))
     source_sha256 = value_probe_envelope.get("receipt_sha256")
@@ -183,7 +189,9 @@ def build_review_queue(value_probe_envelope: Mapping[str, Any]) -> dict[str, Any
         "exact_duplicates_collapsed": machine_qualified - len(candidates),
         "candidates": candidates,
     }
-    return {**queue_core, "queue_sha256": _sha256(queue_core)}
+    queue = {**queue_core, "queue_sha256": _sha256(queue_core)}
+    _validate_schema(queue, "human-review-queue.schema.json", "review_queue_schema_invalid")
+    return queue
 
 
 def _validated_queue(queue: Mapping[str, Any]) -> tuple[str, dict[str, Mapping[str, Any]]]:
@@ -198,6 +206,8 @@ def _validated_queue(queue: Mapping[str, Any]) -> tuple[str, dict[str, Mapping[s
     rows = queue.get("candidates")
     if not isinstance(rows, list):
         raise HumanReviewError("review_queue_candidates_invalid")
+    if not rows:
+        raise HumanReviewError("review_queue_empty")
     if queue.get("review_candidate_count") != len(rows):
         raise HumanReviewError("review_queue_candidate_count_mismatch")
     machine_qualified = queue.get("machine_qualified_count")
@@ -221,6 +231,8 @@ def _validated_queue(queue: Mapping[str, Any]) -> tuple[str, dict[str, Mapping[s
             or candidate_id in by_id
         ):
             raise HumanReviewError("review_queue_candidate_duplicate")
+        if candidate_id != f"candidate-{_candidate_identity(row)[:24]}":
+            raise HumanReviewError("review_queue_candidate_identity_mismatch")
         for field in ("title", "content", "action", "source_topic", "source_type"):
             _nonempty(row.get(field), f"review_queue_{field}_invalid")
         if row.get("topic") not in TOPICS or row.get("learning_type") not in LEARNING_TYPES:
@@ -243,7 +255,7 @@ def _validated_queue(queue: Mapping[str, Any]) -> tuple[str, dict[str, Mapping[s
             or not source_ids
             or len(source_ids) != len(set(source_ids))
             or any(not isinstance(source_id, str) or not source_id for source_id in source_ids)
-            or row.get("support_count") != len(source_ids)
+            or row.get("support_count") != len({uri.split("@", 1)[0] for uri in evidence})
         ):
             raise HumanReviewError("review_queue_support_invalid")
         by_id[candidate_id] = row
@@ -328,17 +340,30 @@ def build_publication(queue: Mapping[str, Any], decisions_document: Mapping[str,
             **learning_body,
         })
 
+    _validate_schema(
+        decisions_document,
+        "human-review-decisions.schema.json",
+        "review_decisions_schema_invalid",
+    )
     decision_counts = {name: counts.get(name, 0) for name in ("accept", "edit", "reject")}
     decisions_sha256 = _sha256(decisions_document)
     core: dict[str, Any] = {
         "schema_version": PUBLICATION_SCHEMA_VERSION,
         "queue_sha256": queue_sha256,
+        "source_sha256": queue["source_sha256"],
+        "source_payload_sha256": queue["source_payload_sha256"],
         "decisions_sha256": decisions_sha256,
         "reviewer": reviewer,
         "decision_counts": decision_counts,
         "learnings": sorted(accepted, key=lambda row: str(row["learning_id"])),
     }
-    return {**core, "publication_sha256": _sha256(core)}
+    publication = {**core, "publication_sha256": _sha256(core)}
+    _validate_schema(
+        publication,
+        "accepted-intelligence.schema.json",
+        "publication_schema_invalid",
+    )
+    return publication
 
 
 def _escape(value: object) -> str:
@@ -377,8 +402,12 @@ def render_review_html(queue: Mapping[str, Any]) -> str:
     cards: list[str] = []
     for candidate in queue["candidates"]:
         evidence = "".join(f"<li><code>{_escape(uri)}</code></li>" for uri in candidate["evidence_uris"])
+        search_text = " ".join(
+            str(candidate[field])
+            for field in ("title", "content", "action", "topic", "learning_type", "claim_label")
+        ).casefold()
         cards.append(f"""
-        <article class="candidate-card" data-candidate-id="{_escape(candidate['candidate_id'])}" data-status="pending">
+        <article class="candidate-card" data-candidate-id="{_escape(candidate['candidate_id'])}" data-status="pending" data-search="{_escape(search_text)}">
           <div class="card-head"><span class="claim">{_escape(candidate['claim_label'])}</span><code>{_escape(candidate['candidate_id'])}</code></div>
           <label>Title<input name="title" value="{_escape(candidate['title'])}"></label>
           <label>Learning<textarea name="content" rows="5">{_escape(candidate['content'])}</textarea></label>
@@ -391,25 +420,26 @@ def render_review_html(queue: Mapping[str, Any]) -> str:
             <label><input type="radio" name="decision-{_escape(candidate['candidate_id'])}" value="reject"> Reject</label>
           </div>
           <label>Review note<input name="rationale" placeholder="Optional reason"></label>
+          <p class="card-message" role="status"></p>
         </article>""")
     card_html = "\n".join(cards)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Marketing intelligence human review</title>
 <style>
-:root{{--ink:#172033;--muted:#667085;--line:#d8dee9;--blue:#215ee6;--green:#08783f;--red:#b42318;--bg:#f5f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,sans-serif}}header{{position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid var(--line);padding:18px max(24px,calc((100% - 1040px)/2))}}h1{{margin:0 0 4px;font-size:24px}}header p{{margin:0;color:var(--muted)}}.toolbar{{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;margin-top:14px}}main{{max-width:1040px;margin:24px auto;padding:0 24px 80px}}input,textarea,select,button{{font:inherit}}input,textarea,select{{width:100%;margin-top:5px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fff}}textarea{{resize:vertical}}label{{display:block;font-weight:650;color:#344054}}.candidate-card{{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin:0 0 16px;box-shadow:0 2px 10px #1018280a}}.candidate-card>label{{margin-top:14px}}.card-head{{display:flex;justify-content:space-between;gap:12px;color:var(--muted)}}.claim{{color:var(--green);font-weight:800}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}}details{{margin-top:14px}}code{{overflow-wrap:anywhere}}.decisions{{display:flex;gap:18px;flex-wrap:wrap;padding:14px;margin-top:16px;background:#f8fafc;border-radius:10px}}.decisions label{{font-weight:700}}.decisions input{{width:auto;margin:0 6px 0 0}}button{{border:0;border-radius:9px;padding:11px 16px;background:var(--blue);color:#fff;font-weight:800;cursor:pointer}}#message{{color:var(--red);font-weight:700}}@media(max-width:720px){{.toolbar,.grid{{grid-template-columns:1fr}}header{{position:static}}}}
+:root{{--ink:#172033;--muted:#667085;--line:#d8dee9;--blue:#215ee6;--green:#08783f;--red:#b42318;--bg:#f5f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,sans-serif}}header{{position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid var(--line);padding:18px max(24px,calc((100% - 1040px)/2))}}h1{{margin:0 0 4px;font-size:24px}}header p{{margin:0;color:var(--muted)}}.toolbar{{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;margin-top:14px}}main{{max-width:1040px;margin:24px auto;padding:0 24px 80px}}input,textarea,select,button{{font:inherit}}input,textarea,select{{width:100%;margin-top:5px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fff}}textarea{{resize:vertical}}label{{display:block;font-weight:650;color:#344054}}.candidate-card{{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin:0 0 16px;box-shadow:0 2px 10px #1018280a}}.candidate-card>label{{margin-top:14px}}.card-head{{display:flex;justify-content:space-between;gap:12px;color:var(--muted)}}.claim{{color:var(--green);font-weight:800}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}}details{{margin-top:14px}}code{{overflow-wrap:anywhere}}.decisions{{display:flex;gap:18px;flex-wrap:wrap;padding:14px;margin-top:16px;background:#f8fafc;border-radius:10px}}.decisions label{{font-weight:700}}.decisions input{{width:auto;margin:0 6px 0 0}}.card-message{{color:var(--red);font-weight:700}}button{{border:0;border-radius:9px;padding:11px 16px;background:var(--blue);color:#fff;font-weight:800;cursor:pointer}}#message{{color:var(--red);font-weight:700}}@media(max-width:720px){{.toolbar,.grid{{grid-template-columns:1fr}}header{{position:static}}}}
 </style></head><body>
 <header><h1>Review marketing intelligence candidates</h1><p>Nothing on this page is published until every proposal has a terminal human decision.</p><div class="toolbar"><label>Reviewer<input id="reviewer" value="Heikki"></label><label>Search<input id="search" placeholder="Search proposals"></label><button id="export" type="button">Export decisions</button></div><p><strong id="progress">0 of {len(queue['candidates'])} decided</strong> <span id="message"></span></p></header>
 <main>{card_html}</main>
 <script>
 const QUEUE_SHA={json.dumps(queue_sha256)};const TOTAL={len(queue['candidates'])};
 const cards=[...document.querySelectorAll('.candidate-card')];
-const searchText=new Map(cards.map(card=>[card,card.textContent.toLowerCase()]));
+const searchText=new Map(cards.map(card=>[card,card.dataset.search]));
 function selected(card){{return card.querySelector('input[type=radio]:checked')?.value||null}}
 function refresh(){{const count=cards.filter(selected).length;document.getElementById('progress').textContent=`${{count}} of ${{TOTAL}} decided`;}}
-cards.forEach(card=>{{card.querySelectorAll('input[type=radio]').forEach(el=>el.addEventListener('change',()=>{{card.dataset.status=el.value;refresh()}}));card.querySelectorAll('input[name=title],textarea,select').forEach(el=>el.addEventListener('input',()=>{{if(selected(card)==='edit')return;const edit=card.querySelector('input[value=edit]');edit.checked=true;card.dataset.status='edit';refresh()}}));}});
+cards.forEach(card=>{{card.querySelectorAll('input[type=radio]').forEach(el=>el.addEventListener('change',()=>{{card.dataset.status=el.value;card.querySelector('.card-message').textContent='';refresh()}}));card.querySelectorAll('input[name=title],textarea,select').forEach(el=>el.addEventListener('input',()=>{{const decision=selected(card);if(decision==='edit')return;if(decision){{card.querySelector('.card-message').textContent='Fields changed. Select Accept edits to publish the changed values.';return}}const edit=card.querySelector('input[value=edit]');edit.checked=true;card.dataset.status='edit';refresh()}}));}});
 document.getElementById('search').addEventListener('input',event=>{{const q=event.target.value.toLowerCase();cards.forEach(card=>card.hidden=!searchText.get(card).includes(q));}});
-document.getElementById('export').addEventListener('click',()=>{{const reviewer=document.getElementById('reviewer').value.trim();const missing=cards.filter(card=>!selected(card));const message=document.getElementById('message');if(!reviewer){{message.textContent='Reviewer is required.';return}}if(missing.length){{message.textContent=`Decide all ${{TOTAL}} proposals before export; ${{missing.length}} remain.`;return}}const decisions=cards.map(card=>{{const decision=selected(card);const row={{candidate_id:card.dataset.candidateId,decision}};const rationale=card.querySelector('[name=rationale]').value.trim();if(rationale)row.rationale=rationale;if(decision==='edit')row.edits={{title:card.querySelector('[name=title]').value.trim(),content:card.querySelector('[name=content]').value.trim(),action:card.querySelector('[name=action]').value.trim(),topic:card.querySelector('[name=topic]').value,learning_type:card.querySelector('[name=learning_type]').value}};return row}});const payload={{schema_version:'human-review-decisions/v1',queue_sha256:QUEUE_SHA,reviewer,decisions}};const blob=new Blob([JSON.stringify(payload,null,2)+'\\n'],{{type:'application/json'}});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='review-decisions.json';link.click();URL.revokeObjectURL(link.href);message.textContent='Decision file exported.';}});
+document.getElementById('export').addEventListener('click',()=>{{const reviewer=document.getElementById('reviewer').value.trim();const missing=cards.filter(card=>!selected(card));const message=document.getElementById('message');if(!reviewer){{message.textContent='Reviewer is required.';return}}if(missing.length){{document.getElementById('search').value='';document.getElementById('search').dispatchEvent(new Event('input'));missing[0].scrollIntoView({{behavior:'smooth',block:'center'}});message.textContent=`Decide all ${{TOTAL}} proposals before export; ${{missing.length}} remain.`;return}}const decisions=[];for(const card of cards){{const decision=selected(card);const row={{candidate_id:card.dataset.candidateId,decision}};const rationale=card.querySelector('[name=rationale]').value.trim();if(rationale)row.rationale=rationale;if(decision==='edit'){{const edits={{title:card.querySelector('[name=title]').value.trim(),content:card.querySelector('[name=content]').value.trim(),action:card.querySelector('[name=action]').value.trim(),topic:card.querySelector('[name=topic]').value,learning_type:card.querySelector('[name=learning_type]').value}};const empty=Object.entries(edits).find(([,value])=>!value);if(empty){{document.getElementById('search').value='';document.getElementById('search').dispatchEvent(new Event('input'));card.scrollIntoView({{behavior:'smooth',block:'center'}});card.querySelector(`[name=${{empty[0]}}]`)?.focus();card.querySelector('.card-message').textContent=`${{empty[0]}} is required for Accept edits.`;message.textContent='Fix the highlighted edited proposal before export.';return}}row.edits=edits}}decisions.push(row)}}const payload={{schema_version:'human-review-decisions/v1',queue_sha256:QUEUE_SHA,reviewer,decisions}};const blob=new Blob([JSON.stringify(payload,null,2)+'\\n'],{{type:'application/json'}});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='review-decisions.json';link.click();URL.revokeObjectURL(link.href);message.textContent='Decision file exported.';}});
 refresh();
 </script></body></html>"""
 
@@ -438,6 +468,8 @@ def _write_private_artifacts(
     require_ignored: bool,
 ) -> dict[str, Path]:
     private_root = _private_root(Path(root), _REPOSITORY_ROOT, require_ignored)
+    if any((private_root / filename).exists() or (private_root / filename).is_symlink() for filename in artifacts):
+        raise HumanReviewError("review_output_exists")
     paths: dict[str, Path] = {}
     for filename, content in artifacts.items():
         path = private_root / filename
@@ -487,6 +519,8 @@ def write_publication_artifacts(
         "schema_version": "human-review-publication-receipt/v1",
         "publication_sha256": publication.get("publication_sha256"),
         "queue_sha256": publication.get("queue_sha256"),
+        "source_sha256": publication.get("source_sha256"),
+        "source_payload_sha256": publication.get("source_payload_sha256"),
         "decisions_sha256": publication.get("decisions_sha256"),
         "accepted_learning_count": len(publication.get("learnings", ())),
         "publication_status": "human_reviewed",

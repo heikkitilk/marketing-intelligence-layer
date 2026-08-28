@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 from pathlib import Path
 import stat
 import tempfile
 import unittest
 
+from marketing_intelligence.census import canonical_json, validate_schema_document
+from marketing_intelligence.cli import _safe_reason
 from marketing_intelligence.review import (
     HumanReviewError,
     build_publication,
@@ -93,6 +97,25 @@ class HumanReviewTest(unittest.TestCase):
         self.assertEqual(candidate["source_candidate_ids"], ["c1", "c2"])
         self.assertRegex(queue["queue_sha256"], r"^[a-f0-9]{64}$")
 
+    def test_duplicate_rows_from_one_session_count_as_one_support_source(self) -> None:
+        first = probe_candidate(
+            "c1",
+            title="Repeated lesson",
+            content="One session produced the same measured result twice.",
+            evidence="session://claude/same-session@" + "1" * 64 + "#event=e-one",
+        )
+        duplicate = probe_candidate(
+            "c2",
+            title="Repeated lesson",
+            content="One session produced the same measured result twice.",
+            evidence="session://claude/same-session@" + "1" * 64 + "#event=e-two",
+        )
+
+        candidate = build_review_queue(probe_receipt(first, duplicate))["candidates"][0]
+
+        self.assertEqual(candidate["support_count"], 1)
+        self.assertEqual(candidate["source_candidate_ids"], ["c1", "c2"])
+
     def test_review_html_is_offline_escaped_and_exports_hash_bound_decisions(self) -> None:
         dangerous = probe_candidate(
             "c1",
@@ -111,6 +134,9 @@ class HumanReviewTest(unittest.TestCase):
         self.assertNotIn("https://cdn", html)
         self.assertIn("human-review-decisions/v1", html)
         self.assertIn("JSON.stringify(payload,null,2)+'\\n'", html)
+        self.assertIn("card.dataset.search", html)
+        self.assertIn("Fields changed. Select Accept edits", html)
+        self.assertIn("Fix the highlighted edited proposal", html)
 
     def test_publication_requires_complete_hash_bound_terminal_decisions(self) -> None:
         candidates = [
@@ -165,6 +191,8 @@ class HumanReviewTest(unittest.TestCase):
 
         self.assertEqual(publication["schema_version"], "accepted-intelligence/v1")
         self.assertEqual(publication["reviewer"], "Heikki")
+        self.assertEqual(publication["source_sha256"], queue["source_sha256"])
+        self.assertEqual(publication["source_payload_sha256"], queue["source_payload_sha256"])
         self.assertEqual(publication["decision_counts"], {"accept": 1, "edit": 1, "reject": 1})
         self.assertEqual(len(publication["learnings"]), 2)
         edited = next(row for row in publication["learnings"] if row["title"] == "Human-corrected title")
@@ -201,6 +229,15 @@ class HumanReviewTest(unittest.TestCase):
         }]
         with self.assertRaisesRegex(HumanReviewError, "review_edit_topic_invalid"):
             build_publication(queue, base)
+
+        tampered = dict(queue)
+        tampered_candidates = [dict(queue["candidates"][0])]
+        tampered_candidates[0]["candidate_id"] = "candidate-" + "f" * 24
+        tampered["candidates"] = tampered_candidates
+        unsigned = {key: value for key, value in tampered.items() if key != "queue_sha256"}
+        tampered["queue_sha256"] = hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
+        with self.assertRaisesRegex(HumanReviewError, "review_queue_candidate_identity_mismatch"):
+            build_publication(tampered, base)
 
     def test_published_html_contains_only_reviewed_learning_and_search(self) -> None:
         queue = build_review_queue(probe_receipt(
@@ -262,6 +299,58 @@ class HumanReviewTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(published_root.stat().st_mode), 0o700)
             for path in (*review_paths.values(), *published_paths.values()):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+            with self.assertRaisesRegex(HumanReviewError, "review_output_exists"):
+                write_review_artifacts(queue, review_root, require_ignored=False)
+            with self.assertRaisesRegex(HumanReviewError, "review_output_exists"):
+                write_publication_artifacts(publication, published_root, require_ignored=False)
+
+    def test_empty_queue_is_not_reviewable(self) -> None:
+        queue = build_review_queue(probe_receipt(probe_candidate(
+            "c1",
+            title="Rejected",
+            content="No candidate reaches review.",
+            evidence="session://claude/session-one@" + "1" * 64 + "#event=e-one",
+            accepted=False,
+            reason="not_useful",
+        )))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(HumanReviewError, "review_queue_empty"):
+                write_review_artifacts(queue, Path(directory), require_ignored=False)
+
+    def test_review_documents_conform_to_their_schemas(self) -> None:
+        queue = build_review_queue(probe_receipt(probe_candidate(
+            "c1",
+            title="Schema-bound proposal",
+            content="A reviewed result follows its published contract.",
+            evidence="session://claude/session-one@" + "1" * 64 + "#event=e-one",
+        )))
+        candidate_id = queue["candidates"][0]["candidate_id"]
+        decisions = {
+            "schema_version": "human-review-decisions/v1",
+            "queue_sha256": queue["queue_sha256"],
+            "reviewer": "Heikki",
+            "decisions": [{"candidate_id": candidate_id, "decision": "accept"}],
+        }
+        publication = build_publication(queue, decisions)
+        schema_root = Path(__file__).resolve().parents[1] / "schemas"
+
+        self.assertEqual(validate_schema_document(queue, schema_root / "human-review-queue.schema.json"), ())
+        self.assertEqual(validate_schema_document(decisions, schema_root / "human-review-decisions.schema.json"), ())
+        self.assertEqual(validate_schema_document(publication, schema_root / "accepted-intelligence.schema.json"), ())
+
+        invalid_queue = copy.deepcopy(queue)
+        invalid_queue["schema_version"] = "human-review-queue/wrong"
+        invalid_queue["candidates"][0]["evidence_uris"] = [
+            "session://claude/session-one@" + "1" * 64 + "#event=bad\tevent"
+        ]
+        errors = validate_schema_document(invalid_queue, schema_root / "human-review-queue.schema.json")
+        self.assertIn("$.schema_version:const", errors)
+        self.assertIn("$.candidates[0].evidence_uris[0]:pattern", errors)
+
+    def test_review_errors_are_safe_and_specific(self) -> None:
+        self.assertEqual(_safe_reason(HumanReviewError("review_decisions_incomplete")), "review_decisions_incomplete")
+        self.assertEqual(_safe_reason(HumanReviewError("reviewer_required")), "reviewer_required")
 
 
 if __name__ == "__main__":

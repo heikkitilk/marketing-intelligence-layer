@@ -4,10 +4,12 @@
   "title": "Human-accepted marketing intelligence",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "queue_sha256", "decisions_sha256", "reviewer", "decision_counts", "learnings", "publication_sha256"],
+  "required": ["schema_version", "queue_sha256", "source_sha256", "source_payload_sha256", "decisions_sha256", "reviewer", "decision_counts", "learnings", "publication_sha256"],
   "properties": {
     "schema_version": {"const": "accepted-intelligence/v1"},
     "queue_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source_payload_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "decisions_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "reviewer": {"type": "string", "minLength": 1},
     "publication_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

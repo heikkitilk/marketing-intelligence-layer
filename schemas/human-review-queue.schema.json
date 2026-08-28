@@ -35,7 +35,7 @@
         "claim_label": {"enum": ["[DATA]", "[LOGIC]", "[HYPOTHESIS]"]},
         "source_topic": {"type": "string"},
         "source_type": {"type": "string"},
-        "evidence_uris": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^session://(codex|claude)/[^@ ]+@[a-f0-9]{64}#event=.+$"}},
+        "evidence_uris": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^session://(codex|claude)/[^@\\s]+@[a-f0-9]{64}#event=[^\\s]+$"}},
         "source_candidate_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "support_count": {"type": "integer", "minimum": 1},
         "review_status": {"const": "pending"}

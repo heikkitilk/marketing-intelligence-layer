@@ -1024,7 +1024,27 @@ def scan_corpus(config: CensusConfig) -> CensusRun:
     )
 
 
-def _validate_schema(value: Any, schema: Mapping[str, Any], location: str) -> list[str]:
+def _validate_schema(
+    value: Any,
+    schema: Mapping[str, Any],
+    location: str,
+    root_schema: Mapping[str, Any] | None = None,
+) -> list[str]:
+    root_schema = root_schema or schema
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        if not reference.startswith("#/"):
+            return [f"{location}:unsupported_ref"]
+        resolved: Any = root_schema
+        for segment in reference[2:].split("/"):
+            key = segment.replace("~1", "/").replace("~0", "~")
+            if not isinstance(resolved, Mapping) or key not in resolved:
+                return [f"{location}:unresolved_ref"]
+            resolved = resolved[key]
+        if not isinstance(resolved, Mapping):
+            return [f"{location}:invalid_ref"]
+        return _validate_schema(value, resolved, location, root_schema)
+
     errors: list[str] = []
     expected = schema.get("type")
     if expected is not None:
@@ -1041,11 +1061,15 @@ def _validate_schema(value: Any, schema: Mapping[str, Any], location: str) -> li
             return [f"{location}:expected_{'|'.join(str(name) for name in expected_types)}"]
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{location}:enum")
+    if "const" in schema and value != schema["const"]:
+        errors.append(f"{location}:const")
     if isinstance(value, str) and "pattern" in schema and re.fullmatch(str(schema["pattern"]), value) is None:
         errors.append(f"{location}:pattern")
     if isinstance(value, int) and "minimum" in schema and value < int(schema["minimum"]):
         errors.append(f"{location}:minimum")
     if isinstance(value, Mapping):
+        if "minProperties" in schema and len(value) < int(schema["minProperties"]):
+            errors.append(f"{location}:minProperties")
         required = schema.get("required", [])
         for key in required:
             if key not in value:
@@ -1057,14 +1081,18 @@ def _validate_schema(value: Any, schema: Mapping[str, Any], location: str) -> li
                     errors.append(f"{location}.{key}:unexpected")
         for key, child_schema in properties.items():
             if key in value and isinstance(child_schema, Mapping):
-                errors.extend(_validate_schema(value[key], child_schema, f"{location}.{key}"))
+                errors.extend(_validate_schema(value[key], child_schema, f"{location}.{key}", root_schema))
     if isinstance(value, list):
         if "minItems" in schema and len(value) < int(schema["minItems"]):
             errors.append(f"{location}:minItems")
+        if schema.get("uniqueItems") is True:
+            identities = [canonical_json(item) for item in value]
+            if len(identities) != len(set(identities)):
+                errors.append(f"{location}:uniqueItems")
         item_schema = schema.get("items")
         if isinstance(item_schema, Mapping):
             for index, item in enumerate(value):
-                errors.extend(_validate_schema(item, item_schema, f"{location}[{index}]"))
+                errors.extend(_validate_schema(item, item_schema, f"{location}[{index}]", root_schema))
     return errors
 
 

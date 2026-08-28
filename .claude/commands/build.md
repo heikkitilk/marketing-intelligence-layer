@@ -33,7 +33,8 @@ bounded value probe. Prepare the private review workbench with:
 marketing-intelligence review prepare --value-probe-receipt <private-value-probe-receipt> --output-root <ignored-review-root>
 ```
 
-Show the generated `review.html` page. Every candidate starts pending. The
+Use a fresh ignored review root for every run; the command refuses to overwrite
+an existing queue. Show the generated `review.html` page. Every candidate starts pending. The
 reviewer must accept, edit, or reject every candidate, then export
 `review-decisions.json`. Do not treat machine qualification or the U7 scores as
 approval to publish.

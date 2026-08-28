@@ -8,15 +8,17 @@ show proposed learnings to a person before writing the intelligence layer.
 The historical U7 reduced-scope receipt remains unchanged, and unattended
 full-corpus extraction remains deferred.
 
-Prepare a private, offline review page from the completed value-probe receipt:
+Prepare a private, offline review page from the completed value-probe receipt.
+Use a fresh output root for every run; the command refuses to overwrite an
+existing queue:
 
 ```sh
 PYTHONPATH=src python3 -m marketing_intelligence.cli review prepare \
   --value-probe-receipt .u8-private/r22-accounting-20260824/u8-2026-08-24T145736Z/receipt.json \
-  --output-root .u8-private/human-review-20260828
+  --output-root .u8-private/human-review-<run-id>
 ```
 
-Open `.u8-private/human-review-20260828/review.html`. Search the proposals,
+Open `.u8-private/human-review-<run-id>/review.html`. Search the proposals,
 inspect their evidence pointers, and mark every proposal `Accept`, `Accept
 edits`, or `Reject`. The page remains local and makes no network request.
 Editing a field selects `Accept edits`. The export button remains blocked until
@@ -27,9 +29,9 @@ The browser downloads `review-decisions.json`. Protect it, then publish:
 ```sh
 chmod 600 ~/Downloads/review-decisions.json
 PYTHONPATH=src python3 -m marketing_intelligence.cli review publish \
-  --queue .u8-private/human-review-20260828/review-queue.json \
+  --queue .u8-private/human-review-<run-id>/review-queue.json \
   --decisions ~/Downloads/review-decisions.json \
-  --output-root .u8-private/human-reviewed-intelligence-20260828
+  --output-root .u8-private/human-reviewed-intelligence-<run-id>
 ```
 
 Publication fails closed unless the decision file is complete and bound to the
@@ -41,6 +43,10 @@ exact queue hash. The output contains only accepted and edited learnings:
 
 All review and publication directories use mode `0700`, and all contained
 files use mode `0600`.
+
+Receipt hashes cover canonical JSON documents, not the serialized file bytes.
+The files include a trailing newline, and browser-exported decisions use
+indented JSON, so a raw file digest is expected to differ.
 
 ## U7 extraction-quality pilot
 

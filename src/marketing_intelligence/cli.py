@@ -102,7 +102,8 @@ def _safe_reason(error: BaseException) -> str:
         "private_packet_file_unsafe",
     }
     message = str(error)
-    return message if message in known or message.startswith("quality_") or message.startswith("codex_packets_") or message.startswith("claude_packets_") else "census_command_failed"
+    safe_prefixes = ("quality_", "codex_packets_", "claude_packets_", "review_", "publication_")
+    return message if message in known or message.startswith(safe_prefixes) or message == "reviewer_required" else "census_command_failed"
 
 
 def _private_safe_source_delta(first: object, second: object) -> dict[str, int]:
