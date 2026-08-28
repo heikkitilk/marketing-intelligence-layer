@@ -36,6 +36,13 @@ from .quality_execution import (
     read_stdin_private_json,
     write_quality_pilot_preflight,
 )
+from .review import (
+    HumanReviewError,
+    build_publication,
+    build_review_queue,
+    write_publication_artifacts,
+    write_review_artifacts,
+)
 from .routing import build_session_preflight, write_preflight_private
 
 
@@ -700,6 +707,51 @@ def _quality_pilot_combine_command(arguments: argparse.Namespace) -> int:
     return 0 if combination.status == "passed" else 2
 
 
+def _review_prepare_command(arguments: argparse.Namespace) -> int:
+    """Create a pending human-review workbench from a private value probe."""
+
+    try:
+        value_probe = load_private_json_input(input_file=arguments.value_probe_receipt)
+        queue = build_review_queue(value_probe)
+        paths = write_review_artifacts(queue, arguments.output_root)
+    except (OSError, ValueError, json.JSONDecodeError, HumanReviewError, QualityPilotExecutionError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error)}))
+        return 2
+
+    print(canonical_json({
+        "status": "blocked_pending_human_review",
+        "candidate_count": len(queue["candidates"]),
+        "queue_sha256": queue["queue_sha256"],
+        "review_page": str(paths["review.html"].relative_to(_REPOSITORY_ROOT)),
+        "publication": "not_created",
+        "mode": "private_offline_review",
+    }))
+    return 0
+
+
+def _review_publish_command(arguments: argparse.Namespace) -> int:
+    """Publish accepted intelligence from one complete human decision file."""
+
+    try:
+        queue = load_private_json_input(input_file=arguments.queue)
+        decisions = load_private_json_input(input_file=arguments.decisions)
+        publication = build_publication(queue, decisions)
+        paths = write_publication_artifacts(publication, arguments.output_root)
+    except (OSError, ValueError, json.JSONDecodeError, HumanReviewError, QualityPilotExecutionError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error)}))
+        return 2
+
+    print(canonical_json({
+        "status": "published_human_reviewed_intelligence",
+        "accepted_learning_count": len(publication["learnings"]),
+        "decision_counts": publication["decision_counts"],
+        "publication_sha256": publication["publication_sha256"],
+        "index_page": str(paths["index.html"].relative_to(_REPOSITORY_ROOT)),
+        "mode": "private_offline_publication",
+    }))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run a no-egress census with explicitly configured local roots."""
 
@@ -759,6 +811,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     quality_combine = quality_commands.add_parser("combine", help="combine all terminal U7 results and write the final immutable gate")
     quality_combine.add_argument("--output-root", type=Path, required=True, help="existing ignored private U7 output root")
+    review = subcommands.add_parser("review", help="prepare human review or publish accepted intelligence")
+    review_commands = review.add_subparsers(dest="review_command", required=True)
+    review_prepare = review_commands.add_parser("prepare", help="create a private offline review page from a value-probe receipt")
+    review_prepare.add_argument("--value-probe-receipt", type=Path, required=True, help="mode-0600 private value-probe receipt JSON")
+    review_prepare.add_argument("--output-root", type=Path, required=True, help="ignored private human-review output root")
+    review_publish = review_commands.add_parser("publish", help="publish only candidates with complete human decisions")
+    review_publish.add_argument("--queue", type=Path, required=True, help="mode-0600 private review-queue JSON")
+    review_publish.add_argument("--decisions", type=Path, required=True, help="mode-0600 exported human decisions JSON")
+    review_publish.add_argument("--output-root", type=Path, required=True, help="ignored private accepted-intelligence output root")
     arguments = parser.parse_args(argv)
     if arguments.command == "census":
         return _census_command(arguments)
@@ -780,6 +841,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _quality_pilot_claude_extract_command(arguments)
     if arguments.command == "quality-pilot" and arguments.quality_command == "combine":
         return _quality_pilot_combine_command(arguments)
+    if arguments.command == "review" and arguments.review_command == "prepare":
+        return _review_prepare_command(arguments)
+    if arguments.command == "review" and arguments.review_command == "publish":
+        return _review_publish_command(arguments)
     parser.error("unknown command")
     return 2
 

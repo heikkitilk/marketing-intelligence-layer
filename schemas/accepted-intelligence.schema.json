@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "accepted-intelligence.schema.json",
+  "title": "Human-accepted marketing intelligence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "queue_sha256", "decisions_sha256", "reviewer", "decision_counts", "learnings", "publication_sha256"],
+  "properties": {
+    "schema_version": {"const": "accepted-intelligence/v1"},
+    "queue_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "decisions_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reviewer": {"type": "string", "minLength": 1},
+    "publication_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "decision_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accept", "edit", "reject"],
+      "properties": {
+        "accept": {"type": "integer", "minimum": 0},
+        "edit": {"type": "integer", "minimum": 0},
+        "reject": {"type": "integer", "minimum": 0}
+      }
+    },
+    "learnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["learning_id", "review_candidate_id", "review_decision", "title", "content", "action", "topic", "learning_type", "claim_label", "evidence_uris", "source_candidate_ids", "support_count"],
+        "properties": {
+          "learning_id": {"type": "string", "pattern": "^learning-[a-f0-9]{24}$"},
+          "review_candidate_id": {"type": "string", "pattern": "^candidate-[a-f0-9]{24}$"},
+          "review_decision": {"enum": ["accept", "edit"]},
+          "title": {"type": "string", "minLength": 1},
+          "content": {"type": "string", "minLength": 1},
+          "action": {"type": "string", "minLength": 1},
+          "topic": {"enum": ["demand_generation", "paid_advertising", "seo", "content_marketing", "attribution_measurement", "product_marketing", "activation_onboarding", "leadership_strategy", "ai_and_marketing_operations"]},
+          "learning_type": {"enum": ["metric", "finding", "formula", "win", "loss", "callout", "channel"]},
+          "claim_label": {"enum": ["[DATA]", "[LOGIC]", "[HYPOTHESIS]"]},
+          "evidence_uris": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+          "source_candidate_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+          "support_count": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}

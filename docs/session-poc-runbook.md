@@ -1,5 +1,47 @@
 # Session proof-of-concept runbook
 
+## Human-review continuation
+
+The automated U7 metrics are calibration diagnostics, not publication gates.
+The proof of concept now follows the upstream product's central interaction:
+show proposed learnings to a person before writing the intelligence layer.
+The historical U7 reduced-scope receipt remains unchanged, and unattended
+full-corpus extraction remains deferred.
+
+Prepare a private, offline review page from the completed value-probe receipt:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli review prepare \
+  --value-probe-receipt .u8-private/r22-accounting-20260824/u8-2026-08-24T145736Z/receipt.json \
+  --output-root .u8-private/human-review-20260828
+```
+
+Open `.u8-private/human-review-20260828/review.html`. Search the proposals,
+inspect their evidence pointers, and mark every proposal `Accept`, `Accept
+edits`, or `Reject`. The page remains local and makes no network request.
+Editing a field selects `Accept edits`. The export button remains blocked until
+all proposals have a terminal decision and a reviewer name.
+
+The browser downloads `review-decisions.json`. Protect it, then publish:
+
+```sh
+chmod 600 ~/Downloads/review-decisions.json
+PYTHONPATH=src python3 -m marketing_intelligence.cli review publish \
+  --queue .u8-private/human-review-20260828/review-queue.json \
+  --decisions ~/Downloads/review-decisions.json \
+  --output-root .u8-private/human-reviewed-intelligence-20260828
+```
+
+Publication fails closed unless the decision file is complete and bound to the
+exact queue hash. The output contains only accepted and edited learnings:
+
+- `accepted-intelligence.json` is the machine-readable accepted layer.
+- `index.html` is the searchable local page.
+- `publication-receipt.json` binds the queue, decisions, and publication hash.
+
+All review and publication directories use mode `0700`, and all contained
+files use mode `0600`.
+
 ## U7 extraction-quality pilot
 
 The U7 pilot evaluates redacted U2 packets only. It never reads raw transcript

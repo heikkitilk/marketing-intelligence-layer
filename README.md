@@ -77,6 +77,17 @@ Drop new notes into `raw/` whenever you have them and run `/build` again. It onl
 
 Your intelligence layer grows every time you run it.
 
+## Session-analysis proof of concept
+
+This branch also contains a local, private proof of concept for turning Codex
+and Claude Code sessions into proposed marketing learnings. It keeps source
+census, redaction, provenance, and exact-deduplication controls, then puts every
+machine-qualified proposal through an offline human-review page. Only accepted
+or human-edited proposals can enter the generated intelligence layer.
+
+See [`docs/session-poc-runbook.md`](docs/session-poc-runbook.md) for the review
+and publication commands. Full-corpus unattended extraction is still deferred.
+
 ---
 
 ## What's in this repo

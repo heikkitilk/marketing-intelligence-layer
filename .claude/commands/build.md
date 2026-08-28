@@ -8,7 +8,7 @@ Three modes:
 - **`/build`** — read notes from the local `raw/` folder
 - **`/build drive`** — read notes from a Google Drive folder
 - **`/build setup`** — change your name, role, or topics (re-runs the setup questions)
-- **`/build sessions`** — create a private, no-egress U3 session-analysis preflight
+- **`/build sessions`** — create a private session-analysis preflight or review extracted candidates
 
 ---
 
@@ -24,8 +24,31 @@ marketing-intelligence sessions --manifest <u1-manifest> --packet-manifest <u2-p
 
 This command only accounts for dependence groups, writes resumable private
 work items, and enforces the resource envelope before dispatch. It never sends
-packet content to a provider. Do not dispatch provider work until U7 quality
-passes and the provider-affine release gate is verified.
+packet content to a provider.
+
+The August 17-24 proof of concept uses a human-review continuation after the
+bounded value probe. Prepare the private review workbench with:
+
+```sh
+marketing-intelligence review prepare --value-probe-receipt <private-value-probe-receipt> --output-root <ignored-review-root>
+```
+
+Show the generated `review.html` page. Every candidate starts pending. The
+reviewer must accept, edit, or reject every candidate, then export
+`review-decisions.json`. Do not treat machine qualification or the U7 scores as
+approval to publish.
+
+After the complete decision file exists, publish only accepted and edited
+candidates with:
+
+```sh
+chmod 600 <review-decisions.json>
+marketing-intelligence review publish --queue <ignored-review-root>/review-queue.json --decisions <review-decisions.json> --output-root <ignored-publication-root>
+```
+
+An incomplete decision set, a queue hash mismatch, or an invalid edit blocks
+publication. Full-corpus unattended extraction remains deferred; this review
+path does not rewrite the historical U7 reduced-scope result.
 
 ---
 
