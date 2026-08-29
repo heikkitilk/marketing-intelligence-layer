@@ -1,0 +1,2 @@
+{"type":"agent-name","sessionId":"claude-no-window","agentName":"fixture"}
+{"type":"user","uuid":"claude-pre-window","sessionId":"claude-no-window","timestamp":"2026-08-16T19:59:59Z","entrypoint":"cli","isSidechain":false,"sessionKind":"interactive","cwd":"/workspace/marketing-intelligence-layer","message":{"role":"user","content":[]}}

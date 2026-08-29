@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quality-pilot blind reviewer labels",
+  "type": "object",
+  "required": ["schema_version", "selection_sha256", "labels"],
+  "properties": {
+    "schema_version": {"const": "quality-reviewer-labels/v1"},
+    "selection_sha256": {"type": "string"},
+    "labels": {"type": "array"}
+  },
+  "additionalProperties": false
+}

@@ -12,3 +12,12 @@ archive/*
 
 .DS_Store
 .claude/settings.local.json
+
+# U8 derives only redacted, private local artifacts. Never track source transcripts,
+# packets, provider responses, or run receipts.
+.u8-private/
+
+# Python build and test caches.
+__pycache__/
+*.py[cod]
+*.egg-info/

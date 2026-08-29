@@ -1,0 +1,1 @@
+{"type":"user","uuid":"claude-child-two-event","sessionId":"claude-shared","timestamp":"2026-08-18T13:03:00Z","entrypoint":"sdk","isSidechain":true,"parentUuid":"claude-root-event","sessionKind":"sdk","cwd":"/workspace/tests","message":{"role":"user","content":[]}}

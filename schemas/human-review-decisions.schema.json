@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "human-review-decisions.schema.json",
+  "title": "Complete human review decisions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "queue_sha256", "reviewer", "decisions"],
+  "properties": {
+    "schema_version": {"const": "human-review-decisions/v1"},
+    "queue_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reviewer": {"type": "string", "minLength": 1},
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate_id", "decision"],
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^candidate-[a-f0-9]{24}$"},
+          "decision": {"enum": ["accept", "edit", "reject"]},
+          "rationale": {"type": "string"},
+          "edits": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": false,
+            "properties": {
+              "title": {"type": "string", "minLength": 1},
+              "content": {"type": "string", "minLength": 1},
+              "action": {"type": "string", "minLength": 1},
+              "topic": {"enum": ["demand_generation", "paid_advertising", "seo", "content_marketing", "attribution_measurement", "product_marketing", "activation_onboarding", "leadership_strategy", "ai_and_marketing_operations"]},
+              "learning_type": {"enum": ["metric", "finding", "formula", "win", "loss", "callout", "channel"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}

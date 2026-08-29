@@ -8,6 +8,48 @@ Three modes:
 - **`/build`** — read notes from the local `raw/` folder
 - **`/build drive`** — read notes from a Google Drive folder
 - **`/build setup`** — change your name, role, or topics (re-runs the setup questions)
+- **`/build sessions`** — create a private session-analysis preflight or review extracted candidates
+
+---
+
+## Sessions mode (`/build sessions`)
+
+Keep the existing build modes unchanged. For `/build sessions`, require the
+private U1 manifest, U2 packet manifest, U2 packet directory, and an ignored
+private output root, then run:
+
+```sh
+marketing-intelligence sessions --manifest <u1-manifest> --packet-manifest <u2-packet-manifest> --packet-root <u2-packets> --output-root <ignored-u3-root>
+```
+
+This command only accounts for dependence groups, writes resumable private
+work items, and enforces the resource envelope before dispatch. It never sends
+packet content to a provider.
+
+The August 17-24 proof of concept uses a human-review continuation after the
+bounded value probe. Prepare the private review workbench with:
+
+```sh
+marketing-intelligence review prepare --value-probe-receipt <private-value-probe-receipt> --output-root <ignored-review-root>
+```
+
+Use a fresh ignored review root for every run; the command refuses to overwrite
+an existing queue. Show the generated `review.html` page. Every candidate starts pending. The
+reviewer must accept, edit, or reject every candidate, then export
+`review-decisions.json`. Do not treat machine qualification or the U7 scores as
+approval to publish.
+
+After the complete decision file exists, publish only accepted and edited
+candidates with:
+
+```sh
+chmod 600 <review-decisions.json>
+marketing-intelligence review publish --queue <ignored-review-root>/review-queue.json --decisions <review-decisions.json> --output-root <ignored-publication-root>
+```
+
+An incomplete decision set, a queue hash mismatch, or an invalid edit blocks
+publication. Full-corpus unattended extraction remains deferred; this review
+path does not rewrite the historical U7 reduced-scope result.
 
 ---
 

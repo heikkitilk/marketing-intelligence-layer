@@ -1,0 +1,1 @@
+{"type":"assistant","uuid":"claude-child-one-event","sessionId":"claude-shared","timestamp":"2026-08-18T13:02:00Z","entrypoint":"sdk","isSidechain":true,"parentUuid":"claude-root-event","sessionKind":"sdk","cwd":"/workspace/tests","message":{"role":"assistant","content":[]}}

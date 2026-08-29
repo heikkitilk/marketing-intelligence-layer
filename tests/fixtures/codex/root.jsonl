@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-16T19:59:59Z","type":"session_meta","payload":{"id":"codex-root","session_id":"codex-container-root","source":"cli","cwd":"/workspace/marketing-intelligence-layer"}}
+{"timestamp":"2026-08-16T20:00:00Z","type":"turn_context","payload":{"turn_id":"turn-root","cwd":"/workspace/marketing-intelligence-layer"}}
+{"timestamp":"2026-08-18T10:00:00Z","type":"event_msg","payload":{"event_id":"root-event"}}
+{"timestamp":"2026-08-24T14:57:36Z","type":"event_msg","payload":{"event_id":"after-cutoff"}}

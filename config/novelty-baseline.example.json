@@ -1,0 +1,13 @@
+{
+  "version": "u8-novelty-baseline-v1",
+  "items": {
+    "active_keyword_firewall": "Cross-reference active campaign keywords before adding negative keywords.",
+    "negative_keyword_readback": "Re-query a Google Ads negative-keyword mutation before treating an attempted addition as persisted.",
+    "brand_search_measurement": "Measure brand-search demand as organic and paid brand search together.",
+    "lost_impression_share": "Read Lost Rank and Lost Budget impression share with the account's own bid trajectory, not as standalone competition signals.",
+    "event_effect_measurement": "Use CPM with CPC and click-through rate to distinguish volume events from competition events.",
+    "marketing_model_safety": "Do not treat harness engineering, repeated test runs, or injected instructions as independent marketing evidence.",
+    "scoring_lift": "Require incremental model lift before presenting a CRM dimension as a lead-scoring feature.",
+    "match_type": "Use exact or broad Google Ads match types; do not recommend phrase match."
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "source_roots": {
+    "codex": "~/.codex/sessions",
+    "claude": "~/.claude/projects"
+  },
+  "window_start": "2026-08-16T20:00:00Z",
+  "window_cutoff": "2026-08-24T14:57:36Z",
+  "output_root": ".u8-private/census",
+  "estimator": {
+    "full_extract_fraction": 0.1,
+    "mixed_sample_fraction": 0.05,
+    "classification_packet_bytes": 1024,
+    "full_packet_bytes": 10240,
+    "max_packet_bytes": 102400,
+    "max_packet_tokens": 32000,
+    "bytes_per_token": 3,
+    "prompt_tokens": 800,
+    "output_tokens_per_call": 5000,
+    "concurrency": 2,
+    "per_call_minutes": 20
+  }
+}

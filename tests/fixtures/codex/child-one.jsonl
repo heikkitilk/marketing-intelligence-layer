@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-18T10:00:00Z","type":"session_meta","payload":{"id":"codex-child-one","session_id":"codex-container-root","parent_thread_id":"codex-root","agent_path":"/root/child-one","source":"sdk","cwd":"/workspace/marketing-intelligence-layer"}}
+{"timestamp":"2026-08-18T10:01:00Z","type":"response_item","payload":{"id":"child-one-event"}}

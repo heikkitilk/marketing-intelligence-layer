@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-10T10:00:00Z","type":"session_meta","payload":{"id":"codex-old-mtime","source":"cli","cwd":"/workspace/tests"}}
+{"timestamp":"2026-08-20T10:00:00Z","type":"event_msg","payload":{"event_id":"old-file-current-event"}}

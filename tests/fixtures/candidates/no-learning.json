@@ -1,0 +1,7 @@
+{
+  "schema_version": "candidate-learning/v1",
+  "result_type": "no_learning",
+  "packet_id": "packet-aaaaaaaaaaaaaaaaaaaaaaaa",
+  "candidates": [],
+  "no_learning_reason": "No transferable marketing outcome is supported by this packet."
+}
