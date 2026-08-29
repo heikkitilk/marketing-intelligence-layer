@@ -90,8 +90,9 @@ and publication commands. The full-corpus continuation keeps the historical U7
 diagnostic intact, calibrates on reviewed decisions, classifies every dependence
 group, extracts one representative packet from each selected group, records
 the actual provider separately from the source harness, and stops at a fresh
-human-review queue. Reviewed publications can then be consolidated into one
-cumulative intelligence layer.
+human-review queue. Publications retain their named reviewer. A model-reviewed
+publication can be returned to a fresh pending queue before it enters the
+human-authoritative intelligence layer.
 
 ---
 

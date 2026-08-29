@@ -48,6 +48,7 @@ from .review import (
     build_consolidated_publication,
     HumanReviewError,
     build_publication,
+    build_publication_requeue,
     build_review_queue,
     write_publication_artifacts,
     write_review_artifacts,
@@ -755,7 +756,7 @@ def _review_publish_command(arguments: argparse.Namespace) -> int:
         return 2
 
     print(canonical_json({
-        "status": "published_human_reviewed_intelligence",
+        "status": "published_reviewed_intelligence",
         "accepted_learning_count": len(publication["learnings"]),
         "decision_counts": publication["decision_counts"],
         "publication_sha256": publication["publication_sha256"],
@@ -782,6 +783,32 @@ def _review_consolidate_command(arguments: argparse.Namespace) -> int:
         "publication_sha256": publication["publication_sha256"],
         "index_page": str(paths["index.html"].relative_to(_REPOSITORY_ROOT)),
         "mode": "private_offline_publication",
+    }))
+    return 0
+
+
+def _review_requeue_command(arguments: argparse.Namespace) -> int:
+    """Return a reviewed publication to a fresh pending human-review queue."""
+
+    try:
+        publication = load_private_json_input(input_file=arguments.publication)
+        queue = build_publication_requeue(
+            publication,
+            prior_reviewer_kind=arguments.prior_reviewer_kind,
+        )
+        paths = write_review_artifacts(queue, arguments.output_root)
+    except (OSError, ValueError, json.JSONDecodeError, HumanReviewError, QualityPilotExecutionError) as error:
+        print(canonical_json({"status": "failed", "reason": _safe_reason(error)}))
+        return 2
+    print(canonical_json({
+        "status": "blocked_pending_human_review",
+        "candidate_count": len(queue["candidates"]),
+        "prior_reviewer": queue["prior_review"]["reviewer"],
+        "prior_reviewer_kind": queue["prior_review"]["reviewer_kind"],
+        "queue_sha256": queue["queue_sha256"],
+        "review_page": str(paths["review.html"].relative_to(_REPOSITORY_ROOT)),
+        "publication": "not_created",
+        "mode": "private_offline_review",
     }))
     return 0
 
@@ -925,6 +952,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     review_consolidate.add_argument("--publication", dest="publications", action="append", type=Path, required=True)
     review_consolidate.add_argument("--reviewer", default="Consolidated previously reviewed intelligence")
     review_consolidate.add_argument("--output-root", type=Path, required=True)
+    review_requeue = review_commands.add_parser("requeue", help="return a reviewed publication to pending human review")
+    review_requeue.add_argument("--publication", type=Path, required=True, help="mode-0600 private accepted-intelligence JSON")
+    review_requeue.add_argument("--prior-reviewer-kind", choices=("human", "model"), required=True)
+    review_requeue.add_argument("--output-root", type=Path, required=True, help="fresh ignored private human-review output root")
     full_corpus = subcommands.add_parser("full-corpus", help="run human-calibrated full-corpus extraction")
     full_corpus_commands = full_corpus.add_subparsers(dest="full_corpus_command", required=True)
     full_corpus_prepare = full_corpus_commands.add_parser("prepare", help="bind human calibration and create classification batches")
@@ -979,6 +1010,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _review_publish_command(arguments)
     if arguments.command == "review" and arguments.review_command == "consolidate":
         return _review_consolidate_command(arguments)
+    if arguments.command == "review" and arguments.review_command == "requeue":
+        return _review_requeue_command(arguments)
     if arguments.command == "full-corpus" and arguments.full_corpus_command == "prepare":
         return _full_corpus_prepare_command(arguments)
     if arguments.command == "full-corpus" and arguments.full_corpus_command == "run-batch":

@@ -14,6 +14,7 @@ from marketing_intelligence.review import (
     HumanReviewError,
     build_consolidated_publication,
     build_publication,
+    build_publication_requeue,
     build_review_queue,
     render_published_html,
     render_review_html,
@@ -85,6 +86,34 @@ class HumanReviewTest(unittest.TestCase):
         self.assertEqual(len(consolidated["learnings"]), 1)
         self.assertEqual(len(consolidated["learnings"][0]["evidence_uris"]), 2)
         self.assertEqual(consolidated["learnings"][0]["support_count"], 2)
+
+    def test_model_reviewed_publication_returns_to_pending_human_review(self) -> None:
+        queue = build_review_queue(probe_receipt(probe_candidate(
+            "c1",
+            title="Model-reviewed learning",
+            content="A model accepted this learning before human review.",
+            evidence="session://codex/session-one@" + "1" * 64 + "#event=e-one",
+        )))
+        publication = build_publication(queue, {
+            "schema_version": "human-review-decisions/v1",
+            "queue_sha256": queue["queue_sha256"],
+            "reviewer": "Codex GPT-5.6-Luna max",
+            "decisions": [{"candidate_id": queue["candidates"][0]["candidate_id"], "decision": "accept"}],
+        })
+
+        requeued = build_publication_requeue(publication, prior_reviewer_kind="model")
+        html = render_review_html(requeued)
+
+        self.assertEqual(requeued["source_kind"], "reviewed-publication-requeue")
+        self.assertEqual(requeued["review_candidate_count"], 1)
+        self.assertEqual(requeued["candidates"][0]["review_status"], "pending")
+        self.assertEqual(requeued["prior_review"], {
+            "reviewer": "Codex GPT-5.6-Luna max",
+            "reviewer_kind": "model",
+            "publication_sha256": publication["publication_sha256"],
+        })
+        self.assertIn("Those decisions are not carried forward", html)
+        self.assertIn("0 of 1 decided", html)
 
     def test_queue_is_deterministic_and_exact_duplicates_retain_all_support(self) -> None:
         first = probe_candidate(
@@ -326,6 +355,10 @@ class HumanReviewTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(published_root.stat().st_mode), 0o700)
             for path in (*review_paths.values(), *published_paths.values()):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+            receipt = json.loads(published_paths["publication-receipt.json"].read_text())
+            self.assertEqual(receipt["publication_status"], "reviewed")
+            self.assertEqual(receipt["reviewer"], "Heikki")
 
             with self.assertRaisesRegex(HumanReviewError, "review_output_exists"):
                 write_review_artifacts(queue, review_root, require_ignored=False)

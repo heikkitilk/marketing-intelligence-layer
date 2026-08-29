@@ -7,7 +7,7 @@
   "required": ["schema_version", "source_kind", "source_sha256", "source_payload_sha256", "machine_qualified_count", "machine_rejected_count", "review_candidate_count", "exact_duplicates_collapsed", "candidates", "queue_sha256"],
   "properties": {
     "schema_version": {"const": "human-review-queue/v1"},
-    "source_kind": {"enum": ["value-probe-receipt", "full-corpus-extraction", "reviewed-publication-consolidation"]},
+    "source_kind": {"enum": ["value-probe-receipt", "full-corpus-extraction", "reviewed-publication-consolidation", "reviewed-publication-requeue"]},
     "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "source_payload_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "machine_qualified_count": {"type": "integer", "minimum": 0},
@@ -15,6 +15,16 @@
     "review_candidate_count": {"type": "integer", "minimum": 0},
     "exact_duplicates_collapsed": {"type": "integer", "minimum": 0},
     "queue_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "prior_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer", "reviewer_kind", "publication_sha256"],
+      "properties": {
+        "reviewer": {"type": "string", "minLength": 1},
+        "reviewer_kind": {"enum": ["human", "model"]},
+        "publication_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
     "candidates": {
       "type": "array",
       "items": {"$ref": "#/$defs/candidate"}

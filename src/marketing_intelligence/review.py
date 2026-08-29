@@ -201,6 +201,7 @@ def build_extraction_review_queue(
     source_payload_sha256: str,
     machine_rejected_count: int = 0,
     source_kind: str = "full-corpus-extraction",
+    prior_review: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Turn validated full-corpus candidates into pending human proposals."""
 
@@ -213,8 +214,28 @@ def build_extraction_review_queue(
         or machine_rejected_count < 0
     ):
         raise HumanReviewError("review_extraction_rejected_count_invalid")
-    if source_kind not in {"full-corpus-extraction", "reviewed-publication-consolidation"}:
+    if source_kind not in {
+        "full-corpus-extraction",
+        "reviewed-publication-consolidation",
+        "reviewed-publication-requeue",
+    }:
         raise HumanReviewError("review_extraction_source_kind_invalid")
+    normalized_prior_review: dict[str, str] | None = None
+    if prior_review is not None:
+        if set(prior_review) != {"reviewer", "reviewer_kind", "publication_sha256"}:
+            raise HumanReviewError("review_prior_review_invalid")
+        reviewer = _nonempty(prior_review.get("reviewer"), "review_prior_reviewer_invalid")
+        reviewer_kind = prior_review.get("reviewer_kind")
+        publication_sha256 = prior_review.get("publication_sha256")
+        if reviewer_kind not in {"human", "model"}:
+            raise HumanReviewError("review_prior_reviewer_kind_invalid")
+        if not isinstance(publication_sha256, str) or re.fullmatch(r"[a-f0-9]{64}", publication_sha256) is None:
+            raise HumanReviewError("review_prior_publication_hash_invalid")
+        normalized_prior_review = {
+            "reviewer": reviewer,
+            "reviewer_kind": reviewer_kind,
+            "publication_sha256": publication_sha256,
+        }
 
     by_identity: dict[str, dict[str, Any]] = {}
     evidence_by_identity: dict[str, set[str]] = {}
@@ -290,9 +311,57 @@ def build_extraction_review_queue(
         "exact_duplicates_collapsed": len(candidate_rows) - len(candidates),
         "candidates": candidates,
     }
+    if normalized_prior_review is not None:
+        queue_core["prior_review"] = normalized_prior_review
     queue = {**queue_core, "queue_sha256": _sha256(queue_core)}
     _validate_schema(queue, "human-review-queue.schema.json", "review_queue_schema_invalid")
     return queue
+
+
+def build_publication_requeue(
+    publication: Mapping[str, Any],
+    *,
+    prior_reviewer_kind: str,
+) -> dict[str, Any]:
+    """Return every learning from a reviewed publication to pending review."""
+
+    _validate_schema(
+        publication,
+        "accepted-intelligence.schema.json",
+        "publication_schema_invalid",
+    )
+    publication_sha256 = publication.get("publication_sha256")
+    unsigned = {key: value for key, value in publication.items() if key != "publication_sha256"}
+    if not isinstance(publication_sha256, str) or _sha256(unsigned) != publication_sha256:
+        raise HumanReviewError("publication_hash_mismatch")
+    if prior_reviewer_kind not in {"human", "model"}:
+        raise HumanReviewError("review_prior_reviewer_kind_invalid")
+
+    candidate_rows: list[dict[str, Any]] = []
+    for learning in publication.get("learnings", ()):
+        if not isinstance(learning, Mapping):
+            raise HumanReviewError("publication_learning_invalid")
+        candidate_rows.append({
+            "candidate_id": str(learning["learning_id"]),
+            "title": learning["title"],
+            "summary": learning["content"],
+            "recommended_action": learning["action"],
+            "topic": learning["topic"],
+            "learning_type": learning["learning_type"],
+            "claim_label": learning["claim_label"],
+            "evidence_uris": learning["evidence_uris"],
+        })
+    return build_extraction_review_queue(
+        candidate_rows,
+        source_sha256=publication_sha256,
+        source_payload_sha256=_sha256(dict(publication)),
+        source_kind="reviewed-publication-requeue",
+        prior_review={
+            "reviewer": publication["reviewer"],
+            "reviewer_kind": prior_reviewer_kind,
+            "publication_sha256": publication_sha256,
+        },
+    )
 
 
 def build_consolidated_publication(
@@ -556,6 +625,15 @@ def render_review_html(queue: Mapping[str, Any]) -> str:
     """Render an offline decision workbench without publishing candidates."""
 
     queue_sha256, _ = _validated_queue(queue)
+    prior_review = queue.get("prior_review")
+    prior_notice = ""
+    if isinstance(prior_review, Mapping):
+        prior_notice = (
+            f'<p class="prior-review">Previously reviewed by '
+            f'<strong>{_escape(prior_review["reviewer"])}</strong> '
+            f'({_escape(prior_review["reviewer_kind"])}). Those decisions are not carried '
+            f'forward; all {len(queue["candidates"])} proposals are pending your review.</p>'
+        )
     cards: list[str] = []
     for candidate in queue["candidates"]:
         evidence = "".join(f"<li><code>{_escape(uri)}</code></li>" for uri in candidate["evidence_uris"])
@@ -586,7 +664,7 @@ def render_review_html(queue: Mapping[str, Any]) -> str:
 <style>
 :root{{--ink:#172033;--muted:#667085;--line:#d8dee9;--blue:#215ee6;--green:#08783f;--red:#b42318;--bg:#f5f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,sans-serif}}header{{position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid var(--line);padding:18px max(24px,calc((100% - 1040px)/2))}}h1{{margin:0 0 4px;font-size:24px}}header p{{margin:0;color:var(--muted)}}.toolbar{{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;margin-top:14px}}main{{max-width:1040px;margin:24px auto;padding:0 24px 80px}}input,textarea,select,button{{font:inherit}}input,textarea,select{{width:100%;margin-top:5px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fff}}textarea{{resize:vertical}}label{{display:block;font-weight:650;color:#344054}}.candidate-card{{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin:0 0 16px;box-shadow:0 2px 10px #1018280a}}.candidate-card>label{{margin-top:14px}}.card-head{{display:flex;justify-content:space-between;gap:12px;color:var(--muted)}}.claim{{color:var(--green);font-weight:800}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}}details{{margin-top:14px}}code{{overflow-wrap:anywhere}}.decisions{{display:flex;gap:18px;flex-wrap:wrap;padding:14px;margin-top:16px;background:#f8fafc;border-radius:10px}}.decisions label{{font-weight:700}}.decisions input{{width:auto;margin:0 6px 0 0}}.card-message{{color:var(--red);font-weight:700}}button{{border:0;border-radius:9px;padding:11px 16px;background:var(--blue);color:#fff;font-weight:800;cursor:pointer}}#message{{color:var(--red);font-weight:700}}@media(max-width:720px){{.toolbar,.grid{{grid-template-columns:1fr}}header{{position:static}}}}
 </style></head><body>
-<header><h1>Review marketing intelligence candidates</h1><p>Nothing on this page is published until every proposal has a terminal human decision.</p><div class="toolbar"><label>Reviewer<input id="reviewer" value="Heikki"></label><label>Search<input id="search" placeholder="Search proposals"></label><button id="export" type="button">Export decisions</button></div><p><strong id="progress">0 of {len(queue['candidates'])} decided</strong> <span id="message"></span></p></header>
+<header><h1>Review marketing intelligence candidates</h1><p>Nothing on this page is published until every proposal has a terminal human decision.</p>{prior_notice}<div class="toolbar"><label>Reviewer<input id="reviewer" value="Heikki"></label><label>Search<input id="search" placeholder="Search proposals"></label><button id="export" type="button">Export decisions</button></div><p><strong id="progress">0 of {len(queue['candidates'])} decided</strong> <span id="message"></span></p></header>
 <main>{card_html}</main>
 <script>
 const QUEUE_SHA={json.dumps(queue_sha256)};const TOTAL={len(queue['candidates'])};
@@ -602,7 +680,7 @@ refresh();
 
 
 def render_published_html(publication: Mapping[str, Any]) -> str:
-    """Render only human-accepted intelligence as a searchable local page."""
+    """Render reviewed intelligence as a searchable local page."""
 
     if publication.get("schema_version") != PUBLICATION_SCHEMA_VERSION:
         raise HumanReviewError("publication_schema_invalid")
@@ -615,7 +693,7 @@ def render_published_html(publication: Mapping[str, Any]) -> str:
             raise HumanReviewError("publication_learning_invalid")
         evidence = "".join(f"<li><code>{_escape(uri)}</code></li>" for uri in learning["evidence_uris"])
         cards.append(f"""<article class="learning" data-topic="{_escape(learning['topic'])}"><div class="meta"><span>{_escape(learning['claim_label'])}</span><span>{_escape(learning['learning_type'])}</span><span>{_escape(learning['review_decision'])}</span></div><h2>{_escape(learning['title'])}</h2><p>{_escape(learning['content'])}</p><p class="action"><strong>Use it:</strong> {_escape(learning['action'])}</p><details><summary>Evidence</summary><ul>{evidence}</ul></details></article>""")
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Accepted marketing intelligence</title><style>*{{box-sizing:border-box}}body{{margin:0;color:#172033;background:#f6f7fb;font:16px/1.55 system-ui,-apple-system,sans-serif}}header{{background:#111936;color:#fff;padding:38px max(24px,calc((100% - 1000px)/2))}}header h1{{margin:0 0 8px}}header p{{margin:0;color:#cbd5e1}}.tools{{max-width:1000px;margin:20px auto;padding:0 24px;display:grid;grid-template-columns:1fr 260px;gap:12px}}input,select{{font:inherit;padding:11px;border:1px solid #d8dee9;border-radius:8px}}main{{max-width:1000px;margin:auto;padding:0 24px 80px}}.learning{{background:#fff;border:1px solid #d8dee9;border-radius:14px;padding:22px;margin-bottom:16px}}.learning h2{{margin:8px 0;font-size:21px}}.meta{{display:flex;gap:8px;flex-wrap:wrap}}.meta span{{background:#eef4ff;color:#174ea6;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800}}.action{{border-left:3px solid #215ee6;padding-left:12px}}code{{overflow-wrap:anywhere}}@media(max-width:650px){{.tools{{grid-template-columns:1fr}}}}</style></head><body><header><h1>Accepted marketing intelligence</h1><p>Every learning below has an explicit human accept or edit decision. Machine-only candidates are not published.</p></header><div class="tools"><input id="search" placeholder="Search accepted intelligence"><select id="topic"><option value="">All topics</option>{_topic_options('')}</select></div><main>{''.join(cards) or '<p>No candidates were accepted.</p>'}</main><script>const cards=[...document.querySelectorAll('.learning')];function filter(){{const q=document.getElementById('search').value.toLowerCase();const topic=document.getElementById('topic').value;cards.forEach(card=>card.hidden=!(card.textContent.toLowerCase().includes(q)&&(!topic||card.dataset.topic===topic)))}}document.getElementById('search').addEventListener('input',filter);document.getElementById('topic').addEventListener('change',filter);</script></body></html>"""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Accepted marketing intelligence</title><style>*{{box-sizing:border-box}}body{{margin:0;color:#172033;background:#f6f7fb;font:16px/1.55 system-ui,-apple-system,sans-serif}}header{{background:#111936;color:#fff;padding:38px max(24px,calc((100% - 1000px)/2))}}header h1{{margin:0 0 8px}}header p{{margin:0;color:#cbd5e1}}.tools{{max-width:1000px;margin:20px auto;padding:0 24px;display:grid;grid-template-columns:1fr 260px;gap:12px}}input,select{{font:inherit;padding:11px;border:1px solid #d8dee9;border-radius:8px}}main{{max-width:1000px;margin:auto;padding:0 24px 80px}}.learning{{background:#fff;border:1px solid #d8dee9;border-radius:14px;padding:22px;margin-bottom:16px}}.learning h2{{margin:8px 0;font-size:21px}}.meta{{display:flex;gap:8px;flex-wrap:wrap}}.meta span{{background:#eef4ff;color:#174ea6;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800}}.action{{border-left:3px solid #215ee6;padding-left:12px}}code{{overflow-wrap:anywhere}}@media(max-width:650px){{.tools{{grid-template-columns:1fr}}}}</style></head><body><header><h1>Accepted marketing intelligence</h1><p>Every learning below has an explicit accept or edit decision. Reviewer: {_escape(publication.get('reviewer', 'Unknown'))}.</p></header><div class="tools"><input id="search" placeholder="Search accepted intelligence"><select id="topic"><option value="">All topics</option>{_topic_options('')}</select></div><main>{''.join(cards) or '<p>No candidates were accepted.</p>'}</main><script>const cards=[...document.querySelectorAll('.learning')];function filter(){{const q=document.getElementById('search').value.toLowerCase();const topic=document.getElementById('topic').value;cards.forEach(card=>card.hidden=!(card.textContent.toLowerCase().includes(q)&&(!topic||card.dataset.topic===topic)))}}document.getElementById('search').addEventListener('input',filter);document.getElementById('topic').addEventListener('change',filter);</script></body></html>"""
 
 
 def _write_private_artifacts(
@@ -679,8 +757,9 @@ def write_publication_artifacts(
         "source_sha256": publication.get("source_sha256"),
         "source_payload_sha256": publication.get("source_payload_sha256"),
         "decisions_sha256": publication.get("decisions_sha256"),
+        "reviewer": publication.get("reviewer"),
         "accepted_learning_count": len(publication.get("learnings", ())),
-        "publication_status": "human_reviewed",
+        "publication_status": "reviewed",
     }
     return _write_private_artifacts(
         root,

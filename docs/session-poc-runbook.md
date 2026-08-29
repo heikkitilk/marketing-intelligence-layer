@@ -42,6 +42,20 @@ exact queue hash. The output contains only accepted and edited learnings:
 - `index.html` is the searchable local page.
 - `publication-receipt.json` binds the queue, decisions, and publication hash.
 
+Publication artifacts identify the named reviewer. The receipt status is
+`reviewed`; it does not claim the reviewer is human. If a model made the prior
+decisions, return every accepted learning to a fresh pending human-review page:
+
+```sh
+PYTHONPATH=src python3 -m marketing_intelligence.cli review requeue \
+  --publication <model-reviewed-publication>/accepted-intelligence.json \
+  --prior-reviewer-kind model \
+  --output-root .u8-private/model-publication-requeue-<run-id>
+```
+
+The new queue records the prior reviewer and reviewer kind, but it does not
+carry any prior decision forward. Every proposal starts as `pending`.
+
 All review and publication directories use mode `0700`, and all contained
 files use mode `0600`.
 
@@ -116,8 +130,9 @@ PYTHONPATH=src python3 -m marketing_intelligence.cli full-corpus finalize \
 terminal result. It never publishes proposals directly. Review and publish the
 new queue with the `review` commands above.
 
-To retain earlier accepted intelligence, consolidate reviewed publications
-after publishing the new queue:
+To retain earlier accepted intelligence, consolidate publications only after
+confirming that each named reviewer has the authority intended for the
+cumulative layer:
 
 ```sh
 PYTHONPATH=src python3 -m marketing_intelligence.cli review consolidate \
@@ -128,7 +143,8 @@ PYTHONPATH=src python3 -m marketing_intelligence.cli review consolidate \
 
 Consolidation validates every input publication hash, exact-deduplicates the
 accepted learnings, and writes one cumulative searchable page. It cannot add an
-unreviewed proposal.
+unreviewed proposal, but it does not upgrade a model decision into a human
+decision. Use `review requeue` first when human authority is required.
 
 ## U7 extraction-quality pilot
 
